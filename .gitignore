@@ -21,5 +21,8 @@ badge_live.json.tmp
 logs/
 venv/
 .venv/
+build/
+dist/
+*.spec
 asf/
 maFiles/

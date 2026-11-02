@@ -12,9 +12,11 @@ import envfile
 
 envfile.load()
 
-SETTINGS_PATH = Path(__file__).parent / "settings.json"
+import runtime
+
+SETTINGS_PATH = runtime.data_dir() / "settings.json"
 # Папка maFiles по умолчанию — рядом с программой. Свою папку укажи в .env (MAFILES_DIR) или в настройках.
-DEFAULT_MAFILES = Path(__file__).resolve().parent / "maFiles"
+DEFAULT_MAFILES = runtime.data_dir() / "maFiles"
 ALPHABET = "23456789BCDFGHJKMNPQRTVWXY"
 
 # Короткие подписи кнопки на экране подтверждения входа.

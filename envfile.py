@@ -1,9 +1,10 @@
 """Чтение и запись .env. Секреты остаются в этом файле и не коммитятся."""
 
 import os
-from pathlib import Path
 
-PATH = Path(__file__).parent / ".env"
+import runtime
+
+PATH = runtime.data_dir() / ".env"
 _loaded = False
 
 
@@ -12,6 +13,10 @@ def load():
     if _loaded:
         return
     _loaded = True
+    if not PATH.is_file():
+        example = runtime.bundle_dir() / ".env.example"
+        if example.is_file():
+            PATH.write_text(example.read_text(encoding="utf-8"), encoding="utf-8")
     if not PATH.is_file():
         return
     for raw in PATH.read_text(encoding="utf-8").splitlines():

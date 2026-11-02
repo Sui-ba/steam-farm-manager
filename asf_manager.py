@@ -13,9 +13,11 @@ import urllib.request
 from pathlib import Path
 from urllib.parse import quote, urlparse
 
-SETTINGS_PATH = Path(__file__).parent / "settings.json"
+import runtime
+
+SETTINGS_PATH = runtime.data_dir() / "settings.json"
 # Папка ASF по умолчанию — рядом с программой. Свою папку укажи в .env (ASF_DIR) или в настройках.
-DEFAULT_ASF = Path(__file__).resolve().parent / "asf"
+DEFAULT_ASF = runtime.data_dir() / "asf"
 CREATE_NO_WINDOW = 0x08000000
 CREATE_NEW_CONSOLE = 0x00000010
 

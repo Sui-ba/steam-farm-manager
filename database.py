@@ -1,10 +1,10 @@
 import sqlite3
-from pathlib import Path
 from datetime import datetime
 
+import runtime
 import vault
 
-DB_PATH = Path(__file__).parent / "accounts.db"
+DB_PATH = runtime.data_dir() / "accounts.db"
 
 
 def get_connection():

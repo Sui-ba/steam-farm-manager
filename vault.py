@@ -6,12 +6,12 @@
 
 import os
 import secrets
-from pathlib import Path
 
 import envfile
+import runtime
 
-KEY_PATH = Path(__file__).parent / ".sfm-key"
-TOKEN_PATH = Path(__file__).parent / ".api-token"
+KEY_PATH = runtime.data_dir() / ".sfm-key"
+TOKEN_PATH = runtime.data_dir() / ".api-token"
 PREFIX = "enc:v1:"
 ACCOUNT_FIELDS = ("password", "email", "email_password")
 PROXY_FIELDS = ("host", "username", "password")

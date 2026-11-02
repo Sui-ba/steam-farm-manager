@@ -11,10 +11,11 @@ import urllib.request
 from pathlib import Path
 
 import envfile
+import runtime
 
 envfile.load()
 
-CFG = Path(__file__).parent / "telegram.json"
+CFG = runtime.data_dir() / "telegram.json"
 PERMS = {"view": "Статус и инвентарь", "balance": "Баланс и уровень", "manage": "Пауза, старт, стоп", "transfer": "Передача предметов"}
 ACTIONS = {"Pause": ("manage", "Пауза"), "Resume": ("manage", "Продолжить"), "Start": ("manage", "Старт"), "Stop": ("manage", "Стоп"),
            "Inv": ("view", "Инвентарь"), "Transfer": ("transfer", "Передать главному")}

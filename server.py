@@ -18,6 +18,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
 import envfile
+import runtime
 
 envfile.load()
 
@@ -31,15 +32,15 @@ import steam_guard as sg
 import tgbot
 import vault
 
-WEB = Path(__file__).parent / "web"
+WEB = runtime.bundle_dir() / "web"
 PORT = int(envfile.get("SFM_PORT", "8765") or "8765")
 HOSTS = {f"127.0.0.1:{PORT}", f"localhost:{PORT}"}
 login_status = {"text": "", "kind": ""}
-CARDS = Path(__file__).parent / "cards.json"
-ACTIVITY = Path(__file__).parent / "activity.json"
-BOARD = Path(__file__).parent / "board.json"
-GAMES = Path(__file__).parent / "games.json"
-BADGES = Path(__file__).parent / "badge_live.json"
+CARDS = runtime.data_dir() / "cards.json"
+ACTIVITY = runtime.data_dir() / "activity.json"
+BOARD = runtime.data_dir() / "board.json"
+GAMES = runtime.data_dir() / "games.json"
+BADGES = runtime.data_dir() / "badge_live.json"
 _board_lock = threading.Lock()
 _games_lock = threading.Lock()
 _badge_lock = threading.Lock()
