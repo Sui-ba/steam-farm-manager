@@ -5,11 +5,16 @@ telegram.json
 settings.json
 activity.json
 .env
+.sfm-key
+.api-token
+*.bak
 *.maFile
 *.mafile
 
 *.db
 cards.json
+board.json
+games.json
 *.log
 logs/
 venv/

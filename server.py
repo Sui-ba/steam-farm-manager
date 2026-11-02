@@ -23,10 +23,12 @@ envfile.load()
 
 import asf_manager as asf
 import browser_login
+import channel_games
 import database as db
 import exchange as ex
 import steam_guard as sg
 import tgbot
+import vault
 
 WEB = Path(__file__).parent / "web"
 PORT = int(envfile.get("SFM_PORT", "8765") or "8765")
@@ -34,6 +36,10 @@ HOSTS = {f"127.0.0.1:{PORT}", f"localhost:{PORT}"}
 login_status = {"text": "", "kind": ""}
 CARDS = Path(__file__).parent / "cards.json"
 ACTIVITY = Path(__file__).parent / "activity.json"
+BOARD = Path(__file__).parent / "board.json"
+GAMES = Path(__file__).parent / "games.json"
+_board_lock = threading.Lock()
+_games_lock = threading.Lock()
 
 
 def _status(text, kind=None):
@@ -65,12 +71,43 @@ def setup_info():
     }
 
 
+def _public_rows(rows, secret_keys):
+    """Список для /api/state: секреты не уходят, остаётся только признак «поле заполнено»."""
+    out = []
+    for row in rows:
+        item = dict(row)
+        for key in secret_keys:
+            item[f"has_{key}"] = bool(item.get(key))
+            item.pop(key, None)
+        out.append(item)
+    return out
+
+
 def state():
     return {
-        "accounts": db.get_all_accounts(), "proxies": db.get_all_proxies(), "stats": db.get_stats(),
+        "accounts": _public_rows(db.get_all_accounts(), ("password", "email_password")),
+        "proxies": _public_rows(db.get_all_proxies(), ("password",)),
+        "stats": db.get_stats(),
         "settings": {"mafiles_dir": sg.get_mafiles_dir(), "asf_dir": asf.get_asf_dir()},
         "setup": setup_info(),
     }
+
+
+def reveal(b):
+    """Один пароль по кнопке «Показать». В общий список он не входит."""
+    kind = str(b.get("kind") or "")
+    row_id = int(b.get("id"))
+    if kind == "account":
+        acc = db.get_account(row_id)
+        if not acc:
+            raise ValueError("Аккаунт не найден")
+        return {"password": acc.get("password") or "", "email_password": acc.get("email_password") or ""}
+    if kind == "proxy":
+        proxy = db.get_proxy(row_id)
+        if not proxy:
+            raise ValueError("Прокси не найден")
+        return {"password": proxy.get("password") or ""}
+    raise ValueError("Нечего показывать")
 
 
 def asf_state():
@@ -80,7 +117,7 @@ def asf_state():
     bots = []
     for bot in asf.list_bots():
         text, cards = asf.live_status(bot, live, running)
-        bots.append({**bot, "state": text, "cards": cards})
+        bots.append({**bot, "state": text, "cards": cards, "farm": asf.farm_view(live.get(bot["name"]) or {})})
     return {"running": running, "ipc": alive, "base": asf.ipc_base(),
             "dir": asf.get_asf_dir(), "bots": bots}
 
@@ -905,8 +942,381 @@ def mini_action(b, q):
     raise ValueError("Неизвестное действие")
 
 
+def _read_board():
+    try:
+        data = json.loads(BOARD.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+    tasks = data.get("tasks") if isinstance(data.get("tasks"), list) else []
+    badges = data.get("badges") if isinstance(data.get("badges"), list) else []
+    return {"tasks": tasks[-400:], "badges": badges[-300:]}
+
+
+def _write_board(data):
+    BOARD.write_text(json.dumps({"tasks": data["tasks"][-400:], "badges": data["badges"][-300:]}, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _bot_names():
+    return {x["name"] for x in asf.list_bots()}
+
+
+def _task_command(kind, bot, params):
+    if kind == "play":
+        return f"play {bot} {params['appid']}"
+    if kind == "nick":
+        return f"nickname {bot} {params['text']}"
+    if kind == "privacy":
+        return f"privacy {bot} {params['text']}"
+    if kind == "points":
+        return f"points {bot}"
+    if kind == "inv":
+        return f"inventory {bot}"
+    if kind == "level":
+        return f"level {bot}"
+    if kind == "custom":
+        return params["command"].replace("{bot}", bot)
+    return ""
+
+
+def _task_params(kind, body):
+    if kind == "play":
+        appid = str(body.get("appid") or "").strip()
+        if not appid.isdigit() or not 1 <= len(appid) <= 10:
+            raise ValueError("Нужен AppID игры, которая уже есть на аккаунте")
+        try:
+            minutes = int(body.get("minutes") or 0)
+        except (TypeError, ValueError):
+            raise ValueError("Минуты — число") from None
+        if not 1 <= minutes <= 360:
+            raise ValueError("Минуты: от 1 до 360")
+        return {"appid": appid, "minutes": minutes}, f"Часы · {appid} · {minutes} мин"
+    if kind == "nick":
+        text = str(body.get("text") or "").strip()
+        if not text or len(text) > 32 or any(ch in text for ch in "\n\r\""):
+            raise ValueError("Ник: до 32 символов, без кавычек и переноса")
+        return {"text": text}, f"Ник · {text}"
+    if kind == "privacy":
+        text = str(body.get("text") or "").strip()
+        if not re.fullmatch(r"[0-9A-Za-z, ]{1,40}", text):
+            raise ValueError("Приватность: цифры и запятые, как в команде ASF")
+        return {"text": text}, "Приватность"
+    if kind in ("points", "inv", "level", "pause", "resume"):
+        titles = {"points": "Поинты", "inv": "Инвентарь", "level": "Уровень", "pause": "Пауза фарма", "resume": "Продолжить фарм"}
+        return {}, titles[kind]
+    if kind == "manual":
+        title = str(body.get("title") or "").strip()
+        if not title or len(title) > 80:
+            raise ValueError("Нужно название отметки")
+        return {}, title
+    if kind == "custom":
+        command = str(body.get("command") or "").replace("\r", "").strip()
+        if not command or len(command) > 200 or "\n" in command or "{ask:" in command:
+            raise ValueError("Команда ASF: одна строка до 200 символов, с {bot}")
+        if "{bot}" not in command:
+            raise ValueError("В команде нужен {bot}")
+        title = str(body.get("title") or "").strip()[:40] or command[:40]
+        return {"command": command}, title
+    raise ValueError("Неизвестный тип задачи")
+
+
+def board_state():
+    with _board_lock:
+        return _read_board()
+
+
+def board_task(b, q):
+    op = str(b.get("op") or "add")
+    with _board_lock:
+        data = _read_board()
+        if op == "add":
+            kind = str(b.get("kind") or "")
+            params, title = _task_params(kind, b)
+            names = [n for n in b.get("bots") or [] if n in _bot_names()]
+            if not names:
+                raise ValueError("Отметь ботов ASF")
+            now = time.strftime("%d.%m %H:%M")
+            known = {x["name"]: x.get("login") or "" for x in asf.list_bots()}
+            for name in names[:40]:
+                data["tasks"].append({
+                    "id": secrets.token_hex(4),
+                    "bot": name,
+                    "login": known.get(name) or "",
+                    "kind": kind,
+                    "title": title,
+                    "params": params,
+                    "status": "queue",
+                    "note": "",
+                    "created": now,
+                    "finished": "",
+                })
+            _write_board(data)
+            log_act(f"Задачи прогрева: {title} × {min(len(names), 40)}")
+            return {"tasks": data["tasks"], "added": min(len(names), 40)}
+        ids = {str(x) for x in b.get("ids") or []}
+        if op == "delete":
+            data["tasks"] = [t for t in data["tasks"] if t.get("id") not in ids]
+        elif op == "clear":
+            data["tasks"] = [t for t in data["tasks"] if t.get("status") not in ("done", "error")]
+        elif op == "done":
+            for task in data["tasks"]:
+                if task.get("id") in ids and task.get("kind") == "manual":
+                    task["status"] = "done"
+                    task["finished"] = time.strftime("%d.%m %H:%M")
+        else:
+            raise ValueError("Неизвестное действие")
+        _write_board(data)
+        return {"tasks": data["tasks"]}
+
+
+def _run_one(task):
+    kind = task.get("kind")
+    bot = task.get("bot") or ""
+    if bot not in _bot_names():
+        raise RuntimeError("Бота уже нет в ASF")
+    if kind == "manual":
+        raise RuntimeError("Отметку закрывают кнопкой «Готово»")
+    if kind == "pause":
+        return asf.bot_action(bot, "Pause")
+    if kind == "resume":
+        return asf.bot_action(bot, "Resume")
+    command = _task_command(kind, bot, task.get("params") or {})
+    if not command:
+        raise RuntimeError("У задачи нет команды")
+    return asf.send_command(command)
+
+
+def board_run(b, q):
+    ids = [str(x) for x in b.get("ids") or []]
+    if not ids:
+        raise ValueError("Нет задач")
+    if len(ids) > 30:
+        raise ValueError("За раз не больше 30 задач")
+    with _board_lock:
+        data = _read_board()
+        todo = [dict(t) for t in data["tasks"] if t.get("id") in ids and t.get("status") == "queue"]
+        playing = {t.get("bot") for t in data["tasks"] if t.get("status") == "run" and t.get("kind") == "play"}
+    now = time.time()
+    stamp = time.strftime("%d.%m %H:%M")
+    updates = {}
+    for task in todo:
+        if task.get("kind") == "play" and task.get("bot") in playing:
+            updates[task["id"]] = {"status": "error", "note": "На этом боте уже идут часы", "finished": stamp}
+            continue
+        try:
+            note = _run_one(task)
+        except (RuntimeError, ValueError, OSError) as exc:
+            updates[task["id"]] = {"status": "error", "note": str(exc)[:200], "finished": stamp}
+            continue
+        if task.get("kind") == "play":
+            minutes = int((task.get("params") or {}).get("minutes") or 0)
+            updates[task["id"]] = {"status": "run", "note": str(note or "")[:200], "until": now + minutes * 60}
+            playing.add(task.get("bot"))
+        else:
+            updates[task["id"]] = {"status": "done", "note": str(note or "")[:200], "finished": stamp}
+    with _board_lock:
+        data = _read_board()
+        for task in data["tasks"]:
+            patch = updates.get(task.get("id"))
+            if patch and task.get("status") == "queue":
+                task.update(patch)
+        _write_board(data)
+    if updates:
+        log_act(f"Прогрев: обработано {len(updates)}")
+    return {"tasks": data["tasks"], "started": len(updates)}
+
+
+def _finish_due_tasks():
+    now = time.time()
+    stamp = time.strftime("%d.%m %H:%M")
+    with _board_lock:
+        data = _read_board()
+        changed = False
+        for task in data["tasks"]:
+            if task.get("status") != "run" or task.get("kind") != "play":
+                continue
+            try:
+                due = float(task.get("until") or 0)
+            except (TypeError, ValueError):
+                due = 0
+            if not due or due > now:
+                continue
+            bot = str(task.get("bot") or "")
+            try:
+                if bot in _bot_names():
+                    asf.send_command("reset " + bot)
+                task["status"] = "done"
+                task["note"] = "Время вышло, ASF снова фармит карты"
+                task["finished"] = stamp
+                changed = True
+            except (RuntimeError, OSError) as exc:
+                task["note"] = str(exc)[:200]
+                changed = True
+        if changed:
+            _write_board(data)
+
+
+def _watch_tasks():
+    while True:
+        time.sleep(20)
+        try:
+            _finish_due_tasks()
+        except Exception:
+            pass
+
+
+def board_badge(b, q):
+    op = str(b.get("op") or "add")
+    with _board_lock:
+        data = _read_board()
+        if op == "delete":
+            ids = {str(x) for x in b.get("ids") or []}
+            data["badges"] = [x for x in data["badges"] if x.get("id") not in ids]
+        else:
+            name = str(b.get("name") or "").strip()[:60]
+            if not name:
+                raise ValueError("Нужно название бейджа")
+            kind = str(b.get("kind") or "game")
+            if kind not in ("game", "community", "event"):
+                raise ValueError("Тип бейджа: игра, сообщество или ивент")
+            appid = str(b.get("appid") or "").strip()
+            if appid and not appid.isdigit():
+                raise ValueError("AppID — число")
+            def num(key, limit):
+                try:
+                    value = int(b.get(key) or 0)
+                except (TypeError, ValueError):
+                    raise ValueError("Уровень и карты — числа") from None
+                if not 0 <= value <= limit:
+                    raise ValueError("Слишком большое число")
+                return value
+            level, target, cards = num("level", 5), num("target", 5), num("cards", 99)
+            if target < 1:
+                target = 5
+            item = {
+                "id": str(b.get("id") or "")[:16] or secrets.token_hex(4),
+                "login": str(b.get("login") or "").strip()[:40],
+                "kind": kind,
+                "name": name,
+                "appid": appid[:10],
+                "level": level,
+                "target": target,
+                "cards": cards,
+                "note": str(b.get("note") or "").strip()[:120],
+            }
+            if not item["login"]:
+                raise ValueError("Выбери аккаунт")
+            found = False
+            for i, old in enumerate(data["badges"]):
+                if old.get("id") == item["id"]:
+                    data["badges"][i] = item
+                    found = True
+                    break
+            if not found:
+                data["badges"].append(item)
+        _write_board(data)
+        return {"badges": data["badges"]}
+
+
+def _read_games():
+    with _games_lock:
+        try:
+            data = json.loads(GAMES.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            data = {}
+    if not isinstance(data, dict):
+        data = {}
+    items = []
+    for it in (data.get("items") or [])[:120]:
+        if not isinstance(it, dict):
+            continue
+        kind, gid = str(it.get("kind") or ""), str(it.get("id") or "")
+        if kind not in ("app", "sub") or not gid.isdigit():
+            continue
+        num = int(gid)
+        if not 1 <= num <= 2_000_000_000:
+            continue
+        title = str(it.get("title") or "")
+        if "http" in title.lower() or "://" in title:
+            title = ""
+        items.append({"kind": kind, "id": str(num), "title": title[:80], "when": str(it.get("when") or "")[:20]})
+    channel = str(data.get("channel") or "")
+    if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{4,31}", channel):
+        channel = ""
+    raw_before = data.get("before")
+    before = int(raw_before) if str(raw_before or "").isdigit() and int(raw_before) > 0 else None
+    def num(key):
+        raw = data.get(key) or 0
+        return int(raw) if str(raw).isdigit() else 0
+    return {
+        "channel": channel, "fetched": str(data.get("fetched") or "")[:20],
+        "items": items, "skipped": num("skipped"), "posts": num("posts"), "before": before,
+    }
+
+
+def _write_games(data):
+    clean = {
+        "channel": data.get("channel") or "",
+        "fetched": data.get("fetched") or "",
+        "skipped": int(data.get("skipped") or 0),
+        "posts": int(data.get("posts") or 0),
+        "before": data.get("before"),
+        "items": data.get("items") or [],
+    }
+    with _games_lock:
+        GAMES.write_text(json.dumps(clean, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def games_state():
+    return _read_games()
+
+
+def _merge_games(old, new):
+    seen = {(it["kind"], it["id"]) for it in old}
+    out = list(old)
+    for it in new:
+        key = (it["kind"], it["id"])
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(it)
+    return out[:120]
+
+
+def games_fetch(b):
+    """Обновляет список или листает старше. Сама в ASF ничего не отправляет."""
+    current = _read_games()
+    more = bool(b.get("more"))
+    name = channel_games.channel_name(b.get("channel") or current["channel"])
+    if more and (not current["before"] or current["channel"] != name):
+        raise ValueError("Сначала обнови канал")
+    found = channel_games.fetch_preview(name, before=current["before"] if more else None, pages=3 if more else 4)
+    if more:
+        found["items"] = _merge_games(current["items"], found["items"])
+        found["skipped"] += current["skipped"]
+        found["posts"] += current["posts"]
+    found["fetched"] = time.strftime("%d.%m %H:%M")
+    _write_games(found)
+    return _read_games()
+
+
+def games_add(b):
+    known = {x["name"] for x in asf.list_bots()}
+    bots = []
+    for name in b.get("bots") or []:
+        if name in known and name not in bots:
+            bots.append(name)
+    commands = channel_games.license_commands(bots, b.get("items") or [])
+    out = [asf.send_command(cmd) for cmd in commands]
+    count = sum(len(cmd.split(" ", 2)[2].split(",")) for cmd in commands)
+    log_act(f"addlicense: {count} игр → {len(bots)} бот.")
+    return {"result": "\n".join(out), "count": count}
+
+
 ROUTES = {
     ("GET", "/api/state"): lambda b, q: state(),
+    ("POST", "/api/reveal"): lambda b, q: reveal(b),
     ("GET", "/api/asf"): lambda b, q: asf_state(),
     ("GET", "/api/login-status"): lambda b, q: login_status,
     ("GET", "/api/templates"): lambda b, q: {"accounts": ex.ACCOUNT_TEMPLATES, "proxies": ex.PROXY_TEMPLATES},
@@ -936,6 +1346,13 @@ ROUTES = {
     ("POST", "/api/tg/test"): lambda b, q: tg_test(b),
     ("GET", "/api/cards"): lambda b, q: get_cards(),
     ("POST", "/api/cards"): lambda b, q: set_cards(b),
+    ("GET", "/api/board"): lambda b, q: board_state(),
+    ("POST", "/api/board/task"): lambda b, q: board_task(b, q),
+    ("POST", "/api/board/run"): lambda b, q: board_run(b, q),
+    ("POST", "/api/board/badge"): lambda b, q: board_badge(b, q),
+    ("GET", "/api/games"): lambda b, q: games_state(),
+    ("POST", "/api/games/fetch"): lambda b, q: games_fetch(b),
+    ("POST", "/api/games/add"): lambda b, q: games_add(b),
     ("POST", "/api/asf/run"): lambda b, q: asf_run(b),
     ("POST", "/api/main"): lambda b, q: db.set_main_account(int(b["id"])) or {"ok": True},
     ("POST", "/api/fields"): lambda b, q: db.update_account_fields(int(b["id"]), b.get("fields") or {}) or {"ok": True},
@@ -969,6 +1386,10 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(403, {"error": "forbidden"})
         if not url.path.startswith("/api/"):
             return self._static(url.path) if method == "GET" else self._send(405, {"error": "method"})
+        size = int(self.headers.get("Content-Length") or 0)
+        raw = self.rfile.read(size) if size else b""
+        if _panel_token_required(url.path) and not vault.token_matches(self.headers.get("Authorization")):
+            return self._send(401, {"error": "unauthorized"})
         if method != "GET" and self.headers.get("X-Requested-With") != "sfm":
             return self._send(403, {"error": "forbidden"})
         route = ROUTES.get((method, url.path))
@@ -977,8 +1398,7 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if url.path.startswith("/api/mini"):
                 _mini_user.who = verify_webapp(self.headers.get("X-Telegram-Init-Data"))
-            size = int(self.headers.get("Content-Length") or 0)
-            body = json.loads(self.rfile.read(size) or b"{}") if size else {}
+            body = json.loads(raw or b"{}") if raw else {}
             result = route(body, parse_qs(url.query))
         except (ValueError, KeyError, RuntimeError, TypeError) as exc:
             return self._send(400, {"error": str(exc) or exc.__class__.__name__})
@@ -1002,8 +1422,13 @@ class Handler(BaseHTTPRequestHandler):
         ctype = mimetypes.guess_type(target.name)[0] or extra.get(target.suffix.lower(), "application/octet-stream")
         if ctype.startswith("text") or "javascript" in ctype or ctype.endswith("+xml"):
             ctype += "; charset=utf-8"
+        data = target.read_bytes()
+        if target == (WEB / "index.html").resolve():
+            token = json.dumps(vault.ensure_api_token()[0])
+            needle = b'<script src="app.js"></script>'
+            data = data.replace(needle, f"<script>window.SFM_TOKEN={token};</script>{needle.decode()}".encode(), 1)
         headers = {"Cache-Control": "no-store"} if path.startswith("/miniapp") else None
-        self._send(200, target.read_bytes(), ctype, headers)
+        self._send(200, data, ctype, headers)
 
     def do_GET(self):
         self._handle("GET")
@@ -1041,8 +1466,24 @@ def open_app_window(url):
     ])
 
 
+def _panel_token_required(path: str) -> bool:
+    """Токен окна нужен всему /api, кроме Mini App и вебхука Telegram.
+
+    Mini App доказывает личность подписью initData. Вебхука в программе нет:
+    путь оставлен открытым, чтобы проверка не отвергала его заранее.
+    """
+    clean = (path or "").split("?", 1)[0]
+    if clean.startswith("/api/mini/"):
+        return False
+    if clean in ("/api/telegram/webhook", "/api/tg/webhook"):
+        return False
+    return True
+
+
 def main():
     db.init_db()
+    vault.announce_api_token()
+    threading.Thread(target=_watch_tasks, daemon=True).start()
     if tgbot.load()["token"]:
         tg.start()
     url = f"http://127.0.0.1:{PORT}/"

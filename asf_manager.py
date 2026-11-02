@@ -398,6 +398,45 @@ def write_bot_proxies(pairs: list[tuple[str, str]]) -> dict:
     return {"updated": updated, "skipped": skipped, "missing": missing, "reloaded": bool(reloaded)}
 
 
+def farm_view(info: dict) -> dict:
+    """Очередь фарма карточек из IPC. Имена игр и числа, без секретов."""
+    empty = {"queue": [], "current": [], "eta": ""}
+    farmer = info.get("CardsFarmer") if isinstance(info, dict) else None
+    if not isinstance(farmer, dict):
+        return empty
+
+    def row(game):
+        if not isinstance(game, dict):
+            return None
+        hours = game.get("HoursPlayed")
+        if isinstance(hours, (int, float)):
+            hours = round(float(hours), 1)
+        else:
+            hours = None
+        cards = game.get("CardsRemaining")
+        return {
+            "appid": game.get("AppID") or game.get("AppId") or "",
+            "name": str(game.get("GameName") or game.get("Name") or "—")[:80],
+            "cards": cards if isinstance(cards, int) else None,
+            "hours": hours,
+        }
+
+    def rows(key):
+        out = []
+        for game in farmer.get(key) or []:
+            item = row(game)
+            if item:
+                out.append(item)
+            if len(out) >= 40:
+                break
+        return out
+
+    eta = str(farmer.get("TimeRemaining") or "").strip()
+    if eta in ("00:00:00", "0:00:00"):
+        eta = ""
+    return {"queue": rows("GamesToFarm"), "current": rows("CurrentGamesFarming"), "eta": eta[:40]}
+
+
 def live_status(bot: dict, live: dict, running: bool = False) -> tuple[str, str]:
     info = live.get(bot["name"]) or {}
     if not live:

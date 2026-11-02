@@ -11,20 +11,40 @@ const h = (tag, attrs = {}, ...kids) => {
   if (val !== undefined) e.value = val;
   return e;
 };
-const S = { accounts: [], proxies: [], stats: {}, settings: {}, tab: 'Дашборд', q: '', sa: null, sp: null, sb: null, asf: null, sel: new Set(), cards: [], wt: 'Чек-лист', cs: new Set() };
+const S = { accounts: [], proxies: [], stats: {}, settings: {}, tab: 'Дашборд', q: '', sa: null, sp: null, sb: null, asf: null, sel: new Set(), cards: [], wt: 'Чек-лист', cs: new Set(), tasks: [], badges: [], warmMode: 'Задачи', tf: 'Все', cq: '', games: { channel: '', items: [], skipped: 0, posts: 0, before: null, fetched: '' }, gresult: '' };
+S.tsel = new Set();
+S.gsel = new Set();
+S.gbot = new Set();
 S.hosts = new Set(JSON.parse(localStorage.getItem('hosts') || '[]')); S.per = +localStorage.getItem('per') || 15; S.activity = [];
 const MODES = [['Авто', 'auto'], ['Светлая', 'light'], ['Тёмная', 'dark']];
 const mode = () => localStorage.getItem('theme') || 'auto';
 
+function authHeaders(extra) {
+  const headers = extra ? { ...extra } : {};
+  if (window.SFM_TOKEN) headers.Authorization = 'Bearer ' + window.SFM_TOKEN;
+  return headers;
+}
 async function api(path, body) {
-  const r = await fetch('/api/' + path, body === undefined ? {} : { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'sfm' }, body: JSON.stringify(body) });
+  const r = await fetch('/api/' + path, body === undefined
+    ? { headers: authHeaders() }
+    : { method: 'POST', headers: authHeaders({ 'Content-Type': 'application/json', 'X-Requested-With': 'sfm' }), body: JSON.stringify(body) });
   const d = await r.json();
   if (!r.ok) throw new Error(d.error || r.status);
   return d;
 }
 function toast(t, bad) { const e = h('div', { class: 'toast' + (bad ? ' bad' : ''), role: 'status' }, t); document.body.append(e); setTimeout(() => e.remove(), 4500); }
 const act = async fn => { try { await fn(); } catch (e) { toast(e.message, true); } };
-const load = async () => { Object.assign(S, await api('state')); S.cards = (await api('cards')).cards; S.activity = (await api('activity')).items; render(); };
+const load = async () => {
+  Object.assign(S, await api('state'));
+  S.cards = (await api('cards')).cards;
+  const board = await api('board');
+  S.tasks = board.tasks || [];
+  S.badges = board.badges || [];
+  S.games = await api('games');
+  if (!gchIn.value && S.games.channel) gchIn.value = '@' + S.games.channel;
+  S.activity = (await api('activity')).items;
+  render();
+};
 const money = n => '$' + Number(n || 0).toFixed(2);
 
 function applyTheme() {
@@ -54,6 +74,8 @@ function asfBadge(short) {
 }
 
 const aqIn = h('input', { class: 'in search', placeholder: 'Поиск по ботам…', 'aria-label': 'Поиск ботов', oninput: () => { S.aq = aqIn.value; render(); aqIn.focus(); } });
+const cqIn = h('input', { class: 'in search', placeholder: 'Поиск по боту или игре', 'aria-label': 'Поиск карточек', oninput: () => { S.cq = cqIn.value; render(); cqIn.focus(); } });
+const gchIn = h('input', { class: 'in', style: 'width:280px', placeholder: '@канал', spellcheck: 'false', 'aria-label': 'Канал Telegram' });
 const mainSel = () => h('select', { class: 'sel', 'aria-label': 'Главный аккаунт', onchange: e => act(async () => { await api('main', { id: +e.target.value }); await load(); }) }, h('option', { value: '' }, '— не выбран —'), S.accounts.map(a => h('option', { value: a.id, selected: !!a.is_main }, a.login)));
 const qIn = h('input', { class: 'in search', placeholder: 'Поиск по логину, ID, почте', 'aria-label': 'Поиск', oninput: () => { S.q = qIn.value; render(); qIn.focus(); } });
 const cmdIn = h('input', { class: 'in', style: 'flex:1', placeholder: 'Команда ASF, например: status ASF', 'aria-label': 'Команда ASF', onkeydown: e => e.key === 'Enter' && sendCmd() });
@@ -64,7 +86,7 @@ const sendCmd = () => act(async () => {
   log((await api('asf/command', { command: v })).result);
 });
 
-const IC = { home: 'M3 11l9-8 9 8v9a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z', users: 'M16 20v-1a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v1M10 11a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7M20 20v-1a4 4 0 0 0-3-3.9', bot: 'M5 8h14v11H5zM12 4v4M9 13h.01M15 13h.01M9 16h6', globe: 'M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18M3 12h18M12 3c3 3 3 15 0 18M12 3c-3 3-3 15 0 18', flame: 'M12 3c1 4 5 5 5 10a5 5 0 0 1-10 0c0-2 1-3 2-4 0 2 1 3 2 3 0-3-1-6 1-9', award: 'M12 14a5 5 0 1 0 0-10 5 5 0 0 0 0 10M8.5 13.5L7 21l5-3 5 3-1.5-7.5', cards: 'M7 4h10a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1M10 9h4', send: 'M22 2L11 13M22 2l-7 20-4-9-9-4z', chart: 'M4 19V5M4 19h16M8 16l3-4 3 2 4-7', key: 'M15 7a4 4 0 1 1-3 6.5L4 21v-3h3v-3h3', user: 'M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8M4 21a8 8 0 0 1 16 0', lock: 'M6 11h12v9H6zM9 11V8a3 3 0 0 1 6 0v3', box: 'M3 7l9-4 9 4v10l-9 4-9-4zM3 7l9 4 9-4M12 11v10', coin: 'M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18M12 7v10M9.5 9.5h4a1.5 1.5 0 0 1 0 3h-3a1.5 1.5 0 0 0 0 3h4', bolt: 'M13 2L4 14h7l-1 8 9-12h-7z', pause: 'M8 5v14M16 5v14', play: 'M7 4l13 8-13 8z', stop: 'M6 6h12v12H6z', power: 'M12 3v9M6.3 7a8 8 0 1 0 11.4 0', pulse: 'M3 12h4l3-8 4 16 3-8h4', shield: 'M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z', plus: 'M12 5v14M5 12h14', x: 'M6 6l12 12M18 6L6 18', check: 'M5 12l5 5 9-10' };
+const IC = { home: 'M3 11l9-8 9 8v9a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z', users: 'M16 20v-1a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v1M10 11a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7M20 20v-1a4 4 0 0 0-3-3.9', bot: 'M5 8h14v11H5zM12 4v4M9 13h.01M15 13h.01M9 16h6', globe: 'M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18M3 12h18M12 3c3 3 3 15 0 18M12 3c-3 3-3 15 0 18', flame: 'M12 3c1 4 5 5 5 10a5 5 0 0 1-10 0c0-2 1-3 2-4 0 2 1 3 2 3 0-3-1-6 1-9', award: 'M12 14a5 5 0 1 0 0-10 5 5 0 0 0 0 10M8.5 13.5L7 21l5-3 5 3-1.5-7.5', cards: 'M7 4h10a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1M10 9h4', send: 'M22 2L11 13M22 2l-7 20-4-9-9-4z', chart: 'M4 19V5M4 19h16M8 16l3-4 3 2 4-7', key: 'M15 7a4 4 0 1 1-3 6.5L4 21v-3h3v-3h3', user: 'M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8M4 21a8 8 0 0 1 16 0', lock: 'M6 11h12v9H6zM9 11V8a3 3 0 0 1 6 0v3', box: 'M3 7l9-4 9 4v10l-9 4-9-4zM3 7l9 4 9-4M12 11v10', coin: 'M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18M12 7v10M9.5 9.5h4a1.5 1.5 0 0 1 0 3h-3a1.5 1.5 0 0 0 0 3h4', bolt: 'M13 2L4 14h7l-1 8 9-12h-7z', pause: 'M8 5v14M16 5v14', play: 'M7 4l13 8-13 8z', stop: 'M6 6h12v12H6z', power: 'M12 3v9M6.3 7a8 8 0 1 0 11.4 0', pulse: 'M3 12h4l3-8 4 16 3-8h4', shield: 'M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z', plus: 'M12 5v14M5 12h14', x: 'M6 6l12 12M18 6L6 18', check: 'M5 12l5 5 9-10', game: 'M6 9h12a4 4 0 0 1 4 4v1a4 4 0 0 1-4 4h-2l-2-2H10l-2 2H6a4 4 0 0 1-4-4v-1a4 4 0 0 1 4-4M8 13h2.5M9.2 11.7v2.6M16 12.5h.01M18 14.2h.01' };
 const ico = n => { const NS = 'http://www.w3.org/2000/svg', s = document.createElementNS(NS, 'svg'), p = document.createElementNS(NS, 'path'); s.setAttribute('viewBox', '0 0 24 24'); s.setAttribute('class', 'ic'); s.setAttribute('aria-hidden', 'true'); p.setAttribute('d', IC[n] || IC.bolt); s.append(p); return s; };
 const PRESETS = [
   { id: 'pause', name: 'Пауза', desc: 'Приостановить фарм', action: 'Pause', color: '#ff9f0a', icon: 'pause' },
@@ -202,20 +224,88 @@ const views = {
 const out = h('pre', { class: 'con' });
 const WARM = { 'Чек-лист': [['profile', 'Профиль заполнен'], ['avatar', 'Аватар и ник'], ['privacy', 'Приватность'], ['games', 'Игры в библиотеке'], ['hours', 'Часы в игре'], ['@prime_bought', 'Куплен прайм'], ['@restriction_lifted', 'Снято ограничение']],
   'Значок сообщества': [['b1', 'Вступить в группу'], ['b2', 'Оставить комментарий'], ['b3', 'Добавить друга'], ['b4', 'Написать обзор']] };
+const TASK_STATUS = { queue: ['Очередь', ''], run: ['Идёт', 'run'], done: ['Готово', 'done'], error: ['Ошибка', 'err'] };
+const TASK_KINDS = [['play', 'Часы в игре'], ['nick', 'Ник'], ['privacy', 'Приватность'], ['points', 'Поинты'], ['inv', 'Инвентарь'], ['level', 'Уровень'], ['pause', 'Пауза фарма'], ['resume', 'Продолжить фарм'], ['manual', 'Отметка'], ['custom', 'Своя команда']];
+const tag = (status) => { const [l, c] = TASK_STATUS[status] || [status || '—', '']; return h('span', { class: 'tag ' + c }, l); };
+const botsNow = () => S.asf ? S.asf.bots : [];
+function taskDlg() {
+  const names = botsNow().map(b => b.name).filter(n => S.tsel.has(n));
+  if (!names.length) return toast('Отметь ботов, которым ставишь задачу', true);
+  const kind = h('select', { class: 'in', 'aria-label': 'Тип задачи' }, TASK_KINDS.map(([id, l]) => h('option', { value: id }, l)));
+  const appid = h('input', { class: 'in', inputmode: 'numeric', placeholder: '730', 'aria-label': 'AppID' });
+  const minutes = h('input', { class: 'in', type: 'number', min: 1, max: 360, value: 30, 'aria-label': 'Минуты' });
+  const text = h('input', { class: 'in', maxlength: 40, 'aria-label': 'Текст' });
+  const title = h('input', { class: 'in', maxlength: 80, placeholder: 'Например: аватар поставлен', 'aria-label': 'Название' });
+  const extra = h('div', { class: 'col' });
+  const hint = h('div', { class: 'm' });
+  const draw = () => {
+    const k = kind.value;
+    hint.textContent = k === 'play' ? 'AppID игры, которая уже есть на аккаунте. На это время фарм карточек встанет, потом ASF вернётся к картам.'
+      : k === 'privacy' ? 'Как в ASF, например 3,3,3. Программа сама настройки не угадывает.'
+      : k === 'custom' ? 'Одна команда ASF. Вместо имени бота пиши {bot}.'
+      : k === 'manual' ? 'Галочка без команды: заявки в друзья и комментарии отмечаешь сам.'
+      : 'Команда уйдёт в ASF только после кнопки «Запустить».';
+    const fields = [];
+    if (k === 'play') fields.push(fld('AppID', appid), fld('Минуты (1–360)', minutes));
+    if (k === 'nick') { text.placeholder = 'Новый ник'; fields.push(fld('Ник', text)); }
+    if (k === 'privacy') { text.placeholder = '3,3,3'; fields.push(fld('Параметры', text)); }
+    if (k === 'manual') fields.push(fld('Название', title));
+    if (k === 'custom') { text.placeholder = 'status {bot}'; fields.push(fld('Название', title), fld('Команда', text)); }
+    extra.replaceChildren(...fields);
+  };
+  kind.addEventListener('change', draw); draw();
+  modal('Новая задача · ' + names.length, h('div', { class: 'col' }, fld('Тип', kind), extra, hint), [['Отмена', '', closeM], ['В очередь', 'p', () => act(async () => {
+    const body = { op: 'add', kind: kind.value, bots: names, appid: appid.value, minutes: +minutes.value, text: text.value, title: title.value, command: text.value };
+    const r = await api('board/task', body);
+    S.tasks = r.tasks; closeM(); toast('В очереди: ' + r.added); render();
+  })]]);
+}
+function warmMarks() {
+  const all = JSON.parse(localStorage.getItem('warmSteps') || 'null') || WARM, list = all[S.wt] || [], save = () => { localStorage.setItem('warmSteps', JSON.stringify(all)); render(); };
+  const done = (a, id) => id[0] === '@' ? !!a[id.slice(1)] : !!JSON.parse(a.warm || '{}')[id];
+  const pct = a => list.length ? Math.round(list.filter(([id]) => done(a, id)).length * 100 / list.length) : 0;
+  const toggle = (a, id, v) => act(async () => {
+    let fields; if (id[0] === '@') fields = { [id.slice(1)]: v ? 1 : 0 }; else { const w = JSON.parse(a.warm || '{}'); w[id] = v; fields = { warm: JSON.stringify(w) }; }
+    await api('fields', { id: a.id, fields }); await load();
+  });
+  return h('div', { class: 'col' },
+    h('div', { class: 'r sb' }, h('nav', { class: 'seg' }, Object.keys(all).map(t => h('button', { class: t === S.wt ? 'on' : '', onclick: () => { S.wt = t; render(); } }, t)))),
+    h('div', { class: 'm' }, 'Отметки хранятся на аккаунте. Новые шаги можно добавлять. В игру это само не заходит.'),
+    h('div', { class: 'card tbl warm' }, h('table', {}, h('thead', {}, h('tr', {}, h('th', {}, 'Аккаунт'), h('th', {}, 'Готово'), list.map(([id, t]) => h('th', {}, t, id.startsWith('x_') ? h('button', { class: 'rm2', 'aria-label': 'Убрать шаг', onclick: () => { all[S.wt] = list.filter(s => s[0] !== id); save(); } }, '×') : null)))),
+      h('tbody', {}, S.accounts.map(a => h('tr', {}, h('td', {}, (a.is_main ? '★ ' : '') + a.login), h('td', {}, h('div', { class: 'r', style: 'flex-wrap:nowrap' }, h('div', { class: 'trk', style: 'width:80px;margin:0' }, h('i', { style: `width:${pct(a)}%` })), h('span', { class: 'm' }, pct(a) + '%'))), list.map(([id, t]) => h('td', {}, h('input', { type: 'checkbox', checked: done(a, id), 'aria-label': t, onchange: e => toggle(a, id, e.target.checked) })))))))),
+    h('div', { class: 'r' }, btn('+ Шаг', '', () => { const t = (prompt('Название шага') || '').trim(); if (t) { all[S.wt] = [...list, ['x_' + Date.now().toString(36), t]]; save(); } })));
+}
+function warmTasks() {
+  const bots = botsNow(), shown = (S.tasks || []).filter(t => S.tf === 'Все' || t.status === S.tf);
+  const queued = shown.filter(t => t.status === 'queue').map(t => t.id);
+  const runIds = ids => act(async () => {
+    if (!ids.length) throw new Error('В очереди ничего нет');
+    const r = await api('board/run', { ids: ids.slice(0, 30) });
+    S.tasks = r.tasks; toast('Обработано: ' + r.started); render();
+  });
+  const patch = (op, ids) => act(async () => { const r = await api('board/task', { op, ids }); S.tasks = r.tasks; render(); });
+  return h('div', { class: 'col' },
+    h('div', { class: 'm' }, 'Ставишь задачу на отмеченных ботов. Запуск — отдельно. Часы идут в игре, которая уже в библиотеке. Раздачи и чужие ключи сюда не входят.'),
+    h('div', { class: 'card pad col' }, h('div', { class: 'r sb' }, h('b', {}, 'Кому'), h('span', { class: 'm' }, 'Отмечено: ' + bots.filter(b => S.tsel.has(b.name)).length)),
+      bots.length ? h('div', { class: 'r' }, bots.map(b => h('button', { type: 'button', class: 'cp' + (S.tsel.has(b.name) ? ' on' : ''), 'aria-pressed': String(S.tsel.has(b.name)), onclick: () => { S.tsel.has(b.name) ? S.tsel.delete(b.name) : S.tsel.add(b.name); render(); } }, b.name))) : h('div', { class: 'm' }, 'Ботов ASF нет. Сначала запусти ASF или проверь папку.')),
+    h('div', { class: 'r' }, btn('Поставить задачу', 'p', taskDlg), btn('Запустить очередь', 'p', () => runIds(queued)),
+      h('select', { class: 'sel', 'aria-label': 'Фильтр задач', onchange: e => { S.tf = e.target.value; render(); } }, [['Все', 'Все'], ['queue', 'Очередь'], ['run', 'Идёт'], ['done', 'Готово'], ['error', 'Ошибка']].map(([v, l]) => h('option', { value: v, selected: S.tf === v }, l))),
+      btn('Убрать готовые', '', () => patch('clear', []))),
+    shown.length ? h('div', { class: 'card tbl' }, h('table', {}, h('thead', {}, h('tr', {}, ['Бот', 'Задача', 'Статус', 'Заметка', ''].map(x => h('th', {}, x)))),
+      h('tbody', {}, shown.slice().reverse().map(t => h('tr', {},
+        h('td', {}, t.bot, t.login && t.login.toLowerCase() !== String(t.bot).toLowerCase() ? h('div', { class: 'm' }, t.login) : null),
+        h('td', {}, t.title || '—', h('div', { class: 'm' }, t.created || '')),
+        h('td', {}, tag(t.status)),
+        h('td', {}, t.note || '—'),
+        h('td', {}, h('div', { class: 'r' },
+          t.status === 'queue' && t.kind !== 'manual' ? btn('Старт', 'p', () => runIds([t.id])) : null,
+          t.kind === 'manual' && t.status === 'queue' ? btn('Готово', 'p', () => patch('done', [t.id])) : null,
+          btn('Убрать', 'd', () => patch('delete', [t.id]))))))))) : h('div', { class: 'card pad m' }, 'Очередь пустая. Отметь ботов и поставь задачу.'));
+}
 Object.assign(views, {
   'Прогрев'() {
-    const all = JSON.parse(localStorage.getItem('warmSteps') || 'null') || WARM, list = all[S.wt] || [], save = () => { localStorage.setItem('warmSteps', JSON.stringify(all)); render(); };
-    const done = (a, id) => id[0] === '@' ? !!a[id.slice(1)] : !!JSON.parse(a.warm || '{}')[id];
-    const pct = a => list.length ? Math.round(list.filter(([id]) => done(a, id)).length * 100 / list.length) : 0;
-    const toggle = (a, id, v) => act(async () => {
-      let fields; if (id[0] === '@') fields = { [id.slice(1)]: v ? 1 : 0 }; else { const w = JSON.parse(a.warm || '{}'); w[id] = v; fields = { warm: JSON.stringify(w) }; }
-      await api('fields', { id: a.id, fields }); await load();
-    });
-    return h('div', { class: 'col' }, h('div', { class: 'r sb' }, h('h1', {}, 'Прогрев'), h('nav', { class: 'seg' }, Object.keys(all).map(t => h('button', { class: t === S.wt ? 'on' : '', onclick: () => { S.wt = t; render(); } }, t)))),
-      h('div', { class: 'm' }, 'Отмечай шаги по аккаунтам. Часы в игре: вкладка ASF → Действия → «CS2 часы». Шаги можно добавлять и убирать.'),
-      h('div', { class: 'card tbl warm' }, h('table', {}, h('thead', {}, h('tr', {}, h('th', {}, 'Аккаунт'), h('th', {}, 'Готово'), list.map(([id, t]) => h('th', {}, t, id.startsWith('x_') ? h('button', { class: 'rm2', 'aria-label': 'Убрать шаг', onclick: () => { all[S.wt] = list.filter(s => s[0] !== id); save(); } }, '×') : null)))),
-        h('tbody', {}, S.accounts.map(a => h('tr', {}, h('td', {}, (a.is_main ? '★ ' : '') + a.login), h('td', {}, h('div', { class: 'r', style: 'flex-wrap:nowrap' }, h('div', { class: 'trk', style: 'width:80px;margin:0' }, h('i', { style: `width:${pct(a)}%` })), h('span', { class: 'm' }, pct(a) + '%'))), list.map(([id, t]) => h('td', {}, h('input', { type: 'checkbox', checked: done(a, id), 'aria-label': t, onchange: e => toggle(a, id, e.target.checked) })))))))),
-      h('div', { class: 'r' }, btn('+ Шаг', '', () => { const t = (prompt('Название шага') || '').trim(); if (t) { all[S.wt] = [...list, ['x_' + Date.now().toString(36), t]]; save(); } })));
+    return h('div', { class: 'col' }, h('div', { class: 'r sb' }, h('h1', {}, 'Прогрев'), h('nav', { class: 'seg' }, ['Задачи', 'Отметки'].map(t => h('button', { class: t === S.warmMode ? 'on' : '', onclick: () => { S.warmMode = t; render(); } }, t)))),
+      S.warmMode === 'Отметки' ? warmMarks() : warmTasks());
   },
   'Цикл'() {
     const steps = (JSON.parse(localStorage.getItem('warmSteps') || 'null') || WARM)['Чек-лист'] || [];
@@ -232,39 +322,113 @@ Object.assign(views, {
         id => { S.sa = id; render(); }, accountForm));
   },
   'Карточки'() {
-    const bots = S.asf ? S.asf.bots : [], main = S.accounts.find(a => a.is_main), mb = main && bots.find(b => (b.login || '').toLowerCase() === main.login.toLowerCase());
+    const bots = botsNow(), q = (S.cq || '').toLowerCase();
+    const farm = b => b.farm || { queue: [], current: [], eta: '' };
+    const left = b => /^\d+$/.test(String(b.cards)) ? +b.cards : null;
+    const interesting = b => { const f = farm(b); return (left(b) || 0) > 0 || f.queue.length || f.current.length; };
+    const shown = bots.filter(b => {
+      const f = farm(b);
+      const blob = (b.name + ' ' + (b.login || '') + ' ' + f.queue.map(g => g.name).join(' ')).toLowerCase();
+      if (q && !blob.includes(q)) return false;
+      return (S.cf || 'С картами') === 'Все' || interesting(b);
+    });
+    const sum = bots.reduce((s, b) => s + (left(b) || 0), 0);
+    const games = bots.reduce((s, b) => s + farm(b).queue.length, 0);
+    const active = bots.filter(interesting).length;
+    const main = S.accounts.find(a => a.is_main), mb = main && bots.find(b => (b.login || '').toLowerCase() === main.login.toLowerCase());
     const src = bots.filter(b => !mb || b.name !== mb.name), pick = src.map(b => b.name).filter(n => S.cs.has(n));
     const run = (cmd, ask) => act(async () => {
-      if (!pick.length) throw new Error('Отметь аккаунты в таблице');
-      if (ask && !confirm(ask)) return; out.textContent = 'Выполняю…'; out.textContent = (await api('asf/run', { bots: pick, command: cmd })).result;
+      if (!pick.length) throw new Error('Отметь ботов внизу');
+      if (ask && !confirm(ask)) return;
+      out.textContent = (await api('asf/run', { bots: pick, command: cmd })).result;
     });
-    const tgl = n => { S.cs.has(n) ? S.cs.delete(n) : S.cs.add(n); render(); };
-    return h('div', { class: 'col' }, h('h1', {}, 'Карточки'),
-      h('div', { class: 'card pad r sb' }, h('div', { class: 'r' }, h('b', {}, 'Главный аккаунт'), h('select', { class: 'sel', 'aria-label': 'Главный аккаунт', onchange: e => act(async () => { await api('main', { id: +e.target.value }); await load(); }) },
-          h('option', { value: '' }, '— не выбран —'), S.accounts.map(a => h('option', { value: a.id, selected: !!a.is_main }, a.login)))),
-        h('span', { class: 'm' }, !main ? 'Выбери, куда передавать предметы' : mb ? `Бот в ASF: ${mb.name}` : 'Бот этого аккаунта не найден в ASF')),
-      h('div', { class: 'r sb' }, h('div', { class: 'r' }, btn('Выбрать всех', '', () => { S.cs = new Set(src.map(b => b.name)); render(); }), btn('Снять выбор', '', () => { S.cs.clear(); render(); }), h('span', { class: 'm' }, `Выбрано: ${pick.length} из ${src.length}`)),
-        h('div', { class: 'r' }, btn('Проверить инвентарь', '', () => run('inventory {bots}')),
-          h('button', { type: 'button', class: 'btn p', onclick: () => mb ? run(`transfer {bots} ${mb.name}`, `Передать предметы с ${pick.length} акк. на ${mb.name}?`) : toast('Сначала выбери главный аккаунт, он должен быть в ASF', true) }, 'Передать главному'))),
-      h('div', { class: 'card tbl' }, h('table', {}, h('thead', {}, h('tr', {}, ['', 'Бот', 'Статус', 'Баланс', 'Лвл', 'Карточек'].map(x => h('th', {}, x)))),
-        h('tbody', {}, src.map(b => { const a = accOf(b); return h('tr', { onclick: () => tgl(b.name) }, h('td', {}, h('input', { type: 'checkbox', checked: S.cs.has(b.name), 'aria-label': b.name, onclick: e => e.stopPropagation(), onchange: () => tgl(b.name) })),
-          h('td', {}, b.name), h('td', {}, h('span', { class: 'dot ' + dotCls(b.state) }), b.state), h('td', {}, a && a.balance || '—'), h('td', {}, a && a.level != null ? a.level : '—'), h('td', {}, b.cards)); })))),
+    const gameRow = (g, now) => h('div', { class: 'grow' + (now ? ' now' : '') },
+      h('div', {}, h('b', {}, g.name || '—'), h('div', { class: 'm' }, 'AppID ' + (g.appid || '—') + (g.hours != null ? ' · ' + g.hours + ' ч' : ''))),
+      h('b', {}, g.cards == null ? '—' : g.cards));
+    return h('div', { class: 'col' }, h('div', { class: 'r sb' }, h('div', {}, h('h1', {}, 'Карточки'), h('div', { class: 'm' }, 'Очередь из ASF: какая игра фармится и сколько карт осталось')),
+      cqIn),
+      h('div', { class: 'cards c4' }, [['Осталось карт', sum], ['Игр в очереди', games], ['Ботов с фармом', active], ['Ботов всего', bots.length]].map(([l, v]) => h('div', { class: 'card stat' }, h('div', { class: 'm' }, l), h('div', { class: 'num' }, v)))),
+      h('div', { class: 'r' }, h('select', { class: 'sel', 'aria-label': 'Фильтр карточек', onchange: e => { S.cf = e.target.value; render(); } }, ['С картами', 'Все'].map(x => h('option', { value: x, selected: (S.cf || 'С картами') === x }, x)))),
+      shown.length ? h('div', { class: 'bgrid' }, shown.map(b => {
+        const f = farm(b), cur = new Set((f.current || []).map(g => String(g.appid)));
+        return h('div', { class: 'card pad col' },
+          h('div', { class: 'r sb' }, h('div', {}, h('b', {}, b.name), h('div', { class: 'm' }, b.login || '—')), h('span', {}, h('span', { class: 'dot ' + dotCls(b.state || '') }), b.state || '—')),
+          h('div', { class: 'r sb' }, h('span', {}, 'Карт ', h('b', {}, b.cards === '' || b.cards == null ? '—' : b.cards)), h('span', { class: 'm' }, f.eta ? 'ещё ' + f.eta : 'время ASF не сказал')),
+          f.current && f.current.length ? h('div', {}, h('div', { class: 'm' }, 'Сейчас'), ...f.current.map(g => gameRow(g, true))) : null,
+          f.queue && f.queue.length ? h('div', { class: 'farmlist' }, h('div', { class: 'm' }, 'Очередь'), ...f.queue.map(g => gameRow(g, cur.has(String(g.appid))))) : h('div', { class: 'm' }, 'ASF не прислал список игр. Видно только общее число карт.'));
+      })) : h('div', { class: 'card pad m' }, S.asf && S.asf.ipc ? 'Нет ботов с картами или фильтр пустой.' : 'Нужен запущенный ASF с IPC, иначе очередь игр не приходит.'),
+      h('div', { class: 'card pad col' }, h('div', { class: 'r sb' }, h('b', {}, 'Передача на главный'), h('select', { class: 'sel', 'aria-label': 'Главный аккаунт', onchange: e => act(async () => { if (!e.target.value) return; await api('main', { id: +e.target.value }); await load(); }) },
+        h('option', { value: '' }, '— не выбран —'), S.accounts.map(a => h('option', { value: a.id, selected: !!a.is_main }, a.login)))),
+        h('div', { class: 'm' }, !main ? 'Выбери, куда складывать дроп' : mb ? 'Бот: ' + mb.name : 'У этого аккаунта нет бота в ASF'),
+        h('div', { class: 'r' }, src.map(b => h('button', { type: 'button', class: 'cp' + (S.cs.has(b.name) ? ' on' : ''), onclick: () => { S.cs.has(b.name) ? S.cs.delete(b.name) : S.cs.add(b.name); render(); } }, b.name))),
+        h('div', { class: 'r' }, btn('Инвентарь', '', () => run('inventory {bots}')), btn('Передать главному', 'p', () => mb ? run('transfer {bots} ' + mb.name, 'Передать с ' + pick.length + ' ботов на ' + mb.name + '?') : toast('Сначала выбери главный аккаунт', true)))),
       out);
   },
 });
 
 Object.assign(views, {
   'Бейджи'() {
+    const kinds = { game: 'Игра', community: 'Сообщество', event: 'Ивент' };
+    const rows = S.badges || [];
+    const xp = rows.reduce((s, b) => s + (b.level || 0) * 100, 0);
+    const ready = rows.filter(b => b.kind === 'game' && (b.cards || 0) >= 5 && (b.level || 0) < (b.target || 5));
+    const badgeDlg = (b = {}) => {
+      const login = h('select', { class: 'in', 'aria-label': 'Аккаунт' }, S.accounts.map(a => h('option', { value: a.login, selected: a.login === b.login }, a.login)));
+      const kind = h('select', { class: 'in', 'aria-label': 'Тип' }, Object.entries(kinds).map(([id, l]) => h('option', { value: id, selected: (b.kind || 'game') === id }, l)));
+      const name = h('input', { class: 'in', value: b.name || '', maxlength: 60, 'aria-label': 'Название' });
+      const appid = h('input', { class: 'in', value: b.appid || '', inputmode: 'numeric', 'aria-label': 'AppID' });
+      const level = h('input', { class: 'in', type: 'number', min: 0, max: 5, value: b.level || 0, 'aria-label': 'Уровень' });
+      const target = h('input', { class: 'in', type: 'number', min: 1, max: 5, value: b.target || 5, 'aria-label': 'Цель' });
+      const cards = h('input', { class: 'in', type: 'number', min: 0, max: 99, value: b.cards || 0, 'aria-label': 'Карты' });
+      const note = h('input', { class: 'in', value: b.note || '', maxlength: 120, 'aria-label': 'Заметка' });
+      modal(b.id ? 'Бейдж' : 'Новый бейдж', h('div', { class: 'grid2' }, fld('Аккаунт', login), fld('Тип', kind), fld('Название', name), fld('AppID', appid), fld('Уровень', level), fld('Цель', target), fld('Карт к сету', cards), fld('Заметка', note),
+        h('div', { class: 'm', style: 'grid-column:1/-1' }, 'Уровень и число карт вводишь сам: программа не заходит в значки Steam и сама их не крафтит. 1 уровень = 100 XP.')),
+        [['Отмена', '', closeM], ['Сохранить', 'p', () => act(async () => {
+          const r = await api('board/badge', { op: 'add', id: b.id, login: login.value, kind: kind.value, name: name.value, appid: appid.value, level: +level.value, target: +target.value, cards: +cards.value, note: note.value });
+          S.badges = r.badges; closeM(); render();
+        })]]);
+    };
     const hosts = S.accounts.filter(a => S.hosts.has(a.id)), workers = S.accounts.filter(a => !S.hosts.has(a.id)), n = Math.max(1, S.per | 0);
     const plan = hosts.map(() => []); if (hosts.length) workers.forEach((w, i) => plan[Math.floor(i / n) % hosts.length].push(w));
-    const save = () => { localStorage.setItem('hosts', JSON.stringify([...S.hosts])); localStorage.setItem('per', S.per); render(); };
-    const per = h('input', { class: 'in', type: 'number', min: 1, value: S.per, style: 'width:80px', 'aria-label': 'Аккаунтов на хост', onchange: e => { S.per = Math.max(1, +e.target.value || 1); save(); } });
-    return h('div', { class: 'col' }, h('div', {}, h('h1', {}, 'Бейджи'), h('div', { class: 'm' }, 'Community Leader: план ротации хостов для друзей и комментариев')),
-      h('div', { class: 'card pad col' }, h('h2', { style: 'margin:0' }, 'Хосты для друзей'),
-        h('div', { class: 'r' }, S.accounts.map(a => h('button', { type: 'button', class: 'cp' + (S.hosts.has(a.id) ? ' on' : ''), 'aria-pressed': String(S.hosts.has(a.id)), onclick: () => { S.hosts.has(a.id) ? S.hosts.delete(a.id) : S.hosts.add(a.id); save(); } }, a.login))),
-        h('div', { class: 'r' }, h('span', { class: 'm' }, 'Аккаунтов на хост'), per)),
-      hosts.length ? h('div', { class: 'tiles' }, hosts.map((x, i) => h('div', { class: 'card pad col' }, h('b', {}, `${x.login} · ${plan[i].length} акк.`), h('div', { class: 'r' }, plan[i].map(w => h('span', { class: 'chip' }, w.login)))))) : h('div', { class: 'card pad m' }, 'Выбери хотя бы одного хоста: он принимает заявки в друзья от рабочих аккаунтов.'),
-      h('div', { class: 'card pad m' }, 'Часть шагов значка требует друга в Steam. Steam ограничивает число заявок в сутки, поэтому хостов несколько: каждый берёт N аккаунтов подряд, затем очередь идёт по кругу. Приложение строит только план, заявки отправляй сам.'));
+    const saveHosts = () => { localStorage.setItem('hosts', JSON.stringify([...S.hosts])); localStorage.setItem('per', S.per); render(); };
+    const per = h('input', { class: 'in', type: 'number', min: 1, value: S.per, style: 'width:80px', 'aria-label': 'Аккаунтов на хост', onchange: e => { S.per = Math.max(1, +e.target.value || 1); saveHosts(); } });
+    const queueHosts = () => act(async () => {
+      if (!hosts.length) throw new Error('Сначала отметь хостов');
+      const byLogin = new Map(botsNow().map(b => [(b.login || '').toLowerCase(), b.name]));
+      let added = 0;
+      for (let i = 0; i < hosts.length; i++) {
+        const names = plan[i].map(w => byLogin.get(w.login.toLowerCase())).filter(Boolean);
+        if (!names.length) continue;
+        for (const title of ['Друзья: ' + hosts[i].login, 'Комментарий: ' + hosts[i].login]) {
+          const r = await api('board/task', { op: 'add', kind: 'manual', bots: names, title });
+          S.tasks = r.tasks; added += r.added;
+        }
+      }
+      if (!added) throw new Error('У рабочих аккаунтов нет ботов ASF');
+      toast('Отметки в прогреве: ' + added);
+    });
+    return h('div', { class: 'col' },
+      h('div', { class: 'r sb' }, h('div', {}, h('h1', {}, 'Бейджи'), h('div', { class: 'm' }, 'План значков по аккаунтам. Крафт остаётся в Steam.')), btn('+ Бейдж', 'p', () => badgeDlg())),
+      h('div', { class: 'cards c3' }, [['В плане', rows.length], ['Можно крафтить', ready.length], ['XP по плану', xp]].map(([l, v]) => h('div', { class: 'card stat' }, h('div', { class: 'm' }, l), h('div', { class: 'num' }, v)))),
+      rows.length ? h('div', { class: 'card tbl' }, h('table', {}, h('thead', {}, h('tr', {}, ['Аккаунт', 'Бейдж', 'Тип', 'Уровень', 'Карты', 'Статус', ''].map(x => h('th', {}, x)))),
+        h('tbody', {}, rows.map(b => {
+          const goal = b.target || 5, pct = Math.round((b.level || 0) * 100 / goal);
+          const craft = b.kind === 'game' && (b.cards || 0) >= 5 && (b.level || 0) < goal;
+          const full = (b.level || 0) >= goal;
+          return h('tr', {},
+            h('td', {}, b.login || '—'),
+            h('td', {}, b.name, h('div', { class: 'm' }, b.appid ? 'AppID ' + b.appid : (b.note || ''))),
+            h('td', {}, kinds[b.kind] || b.kind),
+            h('td', {}, h('div', { class: 'r', style: 'flex-wrap:nowrap' }, h('div', { class: 'trk', style: 'width:72px;margin:0' }, h('i', { style: 'width:' + pct + '%' })), (b.level || 0) + '/' + goal)),
+            h('td', {}, b.kind === 'game' ? (b.cards || 0) + '/5' : '—'),
+            h('td', {}, full ? 'готов' : craft ? 'можно крафтить' : 'копит'),
+            h('td', {}, h('div', { class: 'r' }, btn('Изменить', '', () => badgeDlg(b)), btn('Убрать', 'd', () => act(async () => { const r = await api('board/badge', { op: 'delete', ids: [b.id] }); S.badges = r.badges; render(); })))));
+        })))) : h('div', { class: 'card pad m' }, 'Пока пусто. Добавь значок игры: аккаунт, название, текущий уровень и сколько карт уже есть к сету.'),
+      h('div', { class: 'card pad col' }, h('h2', { style: 'margin:0' }, 'Значок сообщества'),
+        h('div', { class: 'm' }, 'Хост принимает друзей и комментарии. Заявки программа не шлёт: ставит отметки в прогрев, их закрываешь сам.'),
+        h('div', { class: 'r' }, S.accounts.map(a => h('button', { type: 'button', class: 'cp' + (S.hosts.has(a.id) ? ' on' : ''), 'aria-pressed': String(S.hosts.has(a.id)), onclick: () => { S.hosts.has(a.id) ? S.hosts.delete(a.id) : S.hosts.add(a.id); saveHosts(); } }, a.login))),
+        h('div', { class: 'r' }, h('span', { class: 'm' }, 'Аккаунтов на хост'), per, btn('Поставить отметки', 'p', queueHosts))),
+      hosts.length ? h('div', { class: 'tiles' }, hosts.map((x, i) => h('div', { class: 'card pad col' }, h('b', {}, x.login + ' · ' + plan[i].length + ' акк.'), h('div', { class: 'r' }, plan[i].map(w => h('span', { class: 'chip' }, w.login)))))) : h('div', { class: 'card pad m' }, 'Отметь хотя бы одного хоста.'));
   },
 });
 const loadTg = async () => { S.tg = await api('tg'); render(); };
@@ -318,6 +482,33 @@ const importAsf = () => act(async () => {
   toast(`Из ASF добавлено: ${r.added}. Уже были: ${r.skipped}.`);
   await load();
 });
+function secretInput(value) {
+  const input = h('input', { class: 'in', type: 'password', value: value ?? '', autocomplete: 'new-password', style: 'flex:1' });
+  const eye = h('button', { type: 'button', class: 'btn', onclick: () => {
+    const open = input.type === 'password';
+    input.type = open ? 'text' : 'password';
+    eye.textContent = open ? 'Скрыть' : 'Показать';
+  } }, 'Показать');
+  return { input, wrap: h('div', { class: 'r' }, input, eye) };
+}
+function hiddenSecret(label, kind, id, field, present) {
+  if (!present) return h('div', { class: 'ev' }, h('span', { class: 'm' }, label), h('b', {}, '—'));
+  const val = h('b', {}, '••••••');
+  let open = false;
+  const eye = h('button', { type: 'button', class: 'btn', 'aria-label': label, onclick: () => act(async () => {
+    if (!open) {
+      const r = await api('reveal', { kind, id });
+      val.textContent = r[field] || '—';
+      eye.textContent = 'Скрыть';
+      open = true;
+    } else {
+      val.textContent = '••••••';
+      eye.textContent = 'Показать';
+      open = false;
+    }
+  }) }, 'Показать');
+  return h('div', { class: 'ev' }, h('span', { class: 'm' }, label), h('span', { class: 'r' }, val, eye));
+}
 function accountCard(a) {
   const px = S.proxies.find(p => p.id === a.proxy_id);
   const bot = (S.asf ? S.asf.bots : []).find(b => (b.login || '').toLowerCase() === (a.login || '').toLowerCase());
@@ -326,9 +517,9 @@ function accountCard(a) {
   return h('div', { class: 'card pad' },
     h('div', { class: 'r sb' }, h('h2', { style: 'margin:0' }, (a.is_main ? '★ ' : '') + (a.login || 'Аккаунт')), btn('Изменить', '', () => accountForm(a))),
     h('div', { class: 'grid2' },
-      line('Логин', a.login), line('Пароль', a.password), line('Настроен', yes(a.configured)), line('Уровень', a.level),
+      line('Логин', a.login), hiddenSecret('Пароль', 'account', a.id, 'password', a.has_password), line('Настроен', yes(a.configured)), line('Уровень', a.level),
       line('Баланс', a.balance), line('Steam ID', a.steam_id), line('Прайм', yes(a.prime_bought)), line('Без ограничения', yes(a.restriction_lifted)),
-      line('Почта', a.email), line('Пароль почты', a.email_password), line('Rcode', a.rcode), line('Код дружбы', a.friend_code),
+      line('Почта', a.email), hiddenSecret('Пароль почты', 'account', a.id, 'email_password', a.has_email_password), line('Rcode', a.rcode), line('Код дружбы', a.friend_code),
       line('Первый Ko', a.first_ko), line('Потрачено', money(a.spent)), line('Прокси', px ? px.host + ':' + px.port : ''),
       line('Ранг', a.rank), line('Опыт', a.xp), line('Дроп', a.drops), line('Доход', money(a.income)),
       line('На главный', a.sent_main), line('Реинвест', money(a.reinvest)),
@@ -336,32 +527,50 @@ function accountCard(a) {
 }
 
 function accountForm(a = {}) {
+  const draw = (full) => {
   const f = {};
-  const inp = (k, l, t = 'text') => (f[k] = h('input', { class: 'in', type: t, step: t === 'number' ? 'any' : null, value: a[k] ?? '' }), fld(l, f[k]));
-  const chk = (k, l) => (f[k] = h('input', { type: 'checkbox', checked: !!a[k] }), h('label', { class: 'r' }, f[k], l));
+  const inp = (k, l, t = 'text') => (f[k] = h('input', { class: 'in', type: t, step: t === 'number' ? 'any' : null, value: full[k] ?? '' }), fld(l, f[k]));
+  const chk = (k, l) => (f[k] = h('input', { type: 'checkbox', checked: !!full[k] }), h('label', { class: 'r' }, f[k], l));
+  const pw = secretInput(full.password), epw = secretInput(full.email_password);
+  f.password = pw.input; f.email_password = epw.input;
   f.proxy_id = h('select', { class: 'in' }, h('option', { value: '' }, '— не назначен —'), S.proxies.map(p => h('option', { value: p.id }, `#${p.id} ${p.host}:${p.port}`)));
-  f.proxy_id.value = a.proxy_id ?? '';
-  modal(a.id ? 'Редактировать аккаунт' : 'Новый аккаунт',
-    h('div', { class: 'grid2' }, inp('steam_id', 'Steam ID'), inp('login', 'Логин *'), inp('password', 'Пароль'), inp('rcode', 'Rcode'), inp('friend_code', 'Код дружбы'), inp('first_ko', 'Первый Ko'),
-      inp('email', 'Почта'), inp('email_password', 'Пароль почты'), inp('spent', 'Потрачено ($)', 'number'), inp('balance', 'Баланс (например 12.50 USD)'), inp('level', 'Уровень Steam', 'number'),
+  f.proxy_id.value = full.proxy_id ?? '';
+  modal(full.id ? 'Редактировать аккаунт' : 'Новый аккаунт',
+    h('div', { class: 'grid2' }, inp('steam_id', 'Steam ID'), inp('login', 'Логин *'), fld('Пароль', pw.wrap), inp('rcode', 'Rcode'), inp('friend_code', 'Код дружбы'), inp('first_ko', 'Первый Ko'),
+      inp('email', 'Почта'), fld('Пароль почты', epw.wrap), inp('spent', 'Потрачено ($)', 'number'), inp('balance', 'Баланс (например 12.50 USD)'), inp('level', 'Уровень Steam', 'number'),
       inp('rank', 'Ранг'), inp('xp', 'Опыт', 'number'), inp('drops', 'Дроп, шт.', 'number'), inp('income', 'Доход ($)', 'number'), inp('sent_main', 'Отправлено на главный', 'number'), inp('reinvest', 'Реинвест ($)', 'number'), inp('notes', 'Заметки'),
       h('div', { class: 'col' }, chk('configured', 'Настроен'), chk('restriction_lifted', 'Снято ограничение'), chk('prime_bought', 'Куплен прайм')), fld('Прокси', f.proxy_id)),
     [['Отмена', '', closeM], ['Сохранить', 'p', () => act(async () => {
       const d = { id: a.id }; for (const [k, e] of Object.entries(f)) d[k] = e.type === 'checkbox' ? e.checked : e.value;
       d.proxy_id = d.proxy_id ? +d.proxy_id : null; await api('account', d); closeM(); await load();
     })]]);
+  };
+  if (!a.id) return draw(a);
+  act(async () => {
+    const r = await api('reveal', { kind: 'account', id: a.id });
+    draw({ ...a, password: r.password, email_password: r.email_password });
+  });
 }
 function proxyForm(p = {}) {
+  const draw = (full) => {
   const f = {};
-  f.protocol = h('select', { class: 'in' }, ['http', 'https', 'socks5', 'socks4'].map(x => h('option', { value: x }, x))); f.protocol.value = p.protocol || 'http';
-  const inp = (k, l) => (f[k] = h('input', { class: 'in', value: p[k] ?? '' }), fld(l, f[k]));
-  modal(p.id ? 'Редактировать прокси' : 'Новый прокси', h('div', { class: 'grid2' }, fld('Протокол', f.protocol), inp('host', 'Хост *'), inp('port', 'Порт *'), inp('username', 'Логин'), inp('password', 'Пароль'), inp('notes', 'Заметки')),
+  f.protocol = h('select', { class: 'in' }, ['http', 'https', 'socks5', 'socks4'].map(x => h('option', { value: x }, x))); f.protocol.value = full.protocol || 'http';
+  const inp = (k, l) => (f[k] = h('input', { class: 'in', value: full[k] ?? '' }), fld(l, f[k]));
+  const pw = secretInput(full.password);
+  f.password = pw.input;
+  modal(full.id ? 'Редактировать прокси' : 'Новый прокси', h('div', { class: 'grid2' }, fld('Протокол', f.protocol), inp('host', 'Хост *'), inp('port', 'Порт *'), inp('username', 'Логин'), fld('Пароль', pw.wrap), inp('notes', 'Заметки')),
     [['Отмена', '', closeM], ['Сохранить', 'p', () => act(async () => {
-      const d = { id: p.id }; for (const [k, e] of Object.entries(f)) d[k] = e.value; await api('proxy', d); closeM(); await load();
+      const d = { id: full.id }; for (const [k, e] of Object.entries(f)) d[k] = e.value; await api('proxy', d); closeM(); await load();
     })]]);
+  };
+  if (!p.id) return draw(p);
+  act(async () => {
+    const r = await api('reveal', { kind: 'proxy', id: p.id });
+    draw({ ...p, password: r.password });
+  });
 }
 const download = async url => {
-  const r = await fetch(url); if (!r.ok) throw new Error((await r.json()).error);
+  const r = await fetch(url, { headers: authHeaders() }); if (!r.ok) throw new Error((await r.json()).error);
   const name = (r.headers.get('Content-Disposition') || '').split('filename=')[1] || 'export';
   const a = h('a', { href: URL.createObjectURL(await r.blob()), download: name }); document.body.append(a); a.click(); a.remove();
 };
@@ -385,8 +594,64 @@ function settingsDlg() {
     [['Отмена', '', closeM], ['Сохранить', 'p', () => act(async () => { await api('settings', { mafiles_dir: m.value, asf_dir: s.value }); closeM(); await load(); pollAsf(); })]]);
 }
 
+const gkey = it => it.kind + ':' + it.id;
+function takeGames(r, fresh) {
+  const prev = new Set((S.games.items || []).map(gkey));
+  S.games = r;
+  if (r.channel) gchIn.value = '@' + r.channel;
+  if (fresh) S.gsel = new Set((r.items || []).map(gkey));
+  else (r.items || []).forEach(it => { if (!prev.has(gkey(it))) S.gsel.add(gkey(it)); });
+  render();
+}
+Object.assign(views, {
+  'Игры'() {
+    const g = S.games || { items: [] };
+    const items = g.items || [];
+    const picked = items.filter(it => S.gsel.has(gkey(it)));
+    const bots = botsNow();
+    const names = bots.map(b => b.name).filter(n => S.gbot.has(n));
+    const pull = more => act(async () => {
+      const r = await api('games/fetch', { channel: gchIn.value, more: !!more });
+      const added = more ? (r.items || []).length - items.length : (r.items || []).length;
+      takeGames(r, !more);
+      toast(added > 0 ? `Steam-ссылок: ${added}` : 'Новых ссылок Steam нет. Раздачи других магазинов и сайты «как получить» не беру.');
+    });
+    const add = () => act(async () => {
+      if (!picked.length) throw new Error('Отметь игры');
+      if (!names.length) throw new Error('Отметь ботов ASF');
+      if (!confirm(`Добавить ${picked.length} игр на ${names.length} ботов? ASF отправит addlicense. Steam примет только то, что сейчас отдаёт бесплатно.`)) return;
+      const r = await api('games/add', { bots: names, items: picked.map(it => ({ kind: it.kind, id: it.id })) });
+      S.gresult = r.result || '';
+      toast(`Команда ушла: ${r.count}`);
+      render();
+    });
+    const allOn = items.length > 0 && picked.length === items.length;
+    return h('div', { class: 'col' },
+      h('div', { class: 'r sb' }, h('div', {}, h('h1', {}, 'Игры'), h('div', { class: 'm' }, 'Публичный канал. Беру только ссылки Steam app и sub. Ключи, пароли и сайты «как получить» не открываю.')),
+        h('div', { class: 'r' }, gchIn, btn('Обновить', 'p', () => pull(false)), g.before ? btn('Ещё посты', '', () => pull(true)) : null)),
+      h('div', { class: 'cards c4' }, [['Steam-ссылок', items.length], ['Выбрано', picked.length], ['Пропущено', g.skipped || 0], ['Постов', g.posts || 0]].map(([l, v]) => h('div', { class: 'card stat' }, h('div', { class: 'm' }, l), h('div', { class: 'num' }, v)))),
+      h('div', { class: 'm' }, (g.fetched ? 'Список от ' + g.fetched + '. ' : '') + 'Пропущено — посты с паролем или ключом, их текст не сохраняется. В библиотеку игра попадает по кнопке, если Steam ещё отдаёт пакет бесплатно. Нужен запущенный ASF с IPC.' + (S.asf && !S.asf.ipc ? ' Сейчас IPC недоступен.' : '')),
+      items.length ? h('div', { class: 'card tbl' }, h('table', {}, h('thead', {}, h('tr', {},
+        h('th', {}, h('input', { type: 'checkbox', checked: allOn, 'aria-label': 'Выбрать все', onclick: e => e.stopPropagation(), onchange: () => { S.gsel = allOn ? new Set() : new Set(items.map(gkey)); render(); } })),
+        ['Тип', 'ID', 'Название', 'Дата'].map(x => h('th', {}, x)))),
+        h('tbody', {}, items.map(it => {
+          const on = S.gsel.has(gkey(it));
+          return h('tr', { onclick: () => { on ? S.gsel.delete(gkey(it)) : S.gsel.add(gkey(it)); render(); } },
+            h('td', {}, h('input', { type: 'checkbox', checked: on, 'aria-label': it.title || it.id, onclick: e => e.stopPropagation(), onchange: () => { on ? S.gsel.delete(gkey(it)) : S.gsel.add(gkey(it)); render(); } })),
+            h('td', {}, it.kind === 'sub' ? 'пакет' : 'игра'),
+            h('td', {}, it.id),
+            h('td', {}, it.title || '—'),
+            h('td', {}, it.when || '—'));
+        })))) : h('div', { class: 'card pad m' }, 'Укажи публичный канал, например @name, и нажми «Обновить». В список попадают только страницы Steam.'),
+      h('div', { class: 'card pad col' },
+        h('b', {}, 'Боты'),
+        bots.length ? h('div', { class: 'r' }, bots.map(b => h('button', { type: 'button', class: 'cp' + (S.gbot.has(b.name) ? ' on' : ''), onclick: () => { S.gbot.has(b.name) ? S.gbot.delete(b.name) : S.gbot.add(b.name); render(); } }, b.name))) : h('div', { class: 'm' }, 'Ботов нет. Запусти ASF, тогда их можно отметить.'),
+        h('div', { class: 'r' }, btn('В библиотеку', 'p', add), names.length ? h('span', { class: 'm' }, `Ботов: ${names.length}, игр: ${picked.length}`) : null)),
+      S.gresult ? h('pre', { class: 'con' }, S.gresult) : null);
+  },
+});
 const NAV = [['Основное', [['Дашборд', 'home', 'Дашборд'], ['Аккаунты', 'users', 'Аккаунты'], ['Цикл', 'chart', 'Цикл'], ['ASF', 'bot', 'Боты ASF'], ['Прокси', 'globe', 'Прокси']]],
-  ['Автоматизация', [['Прогрев', 'flame', 'Прогрев'], ['Бейджи', 'award', 'Бейджи'], ['Карточки', 'cards', 'Карточки']]], ['Команда', [['Telegram', 'send', 'Telegram']]]];
+  ['Автоматизация', [['Прогрев', 'flame', 'Прогрев'], ['Бейджи', 'award', 'Бейджи'], ['Карточки', 'cards', 'Карточки'], ['Игры', 'game', 'Игры']]], ['Команда', [['Telegram', 'send', 'Telegram']]]];
 function setupScreen() {
   const s = S.setup || {};
   const asfDir = h('input', { class: 'in', value: s.asf_dir || '', spellcheck: 'false', 'aria-label': 'Папка ASF' });
@@ -444,10 +709,20 @@ function render() {
   } else if (box) box.remove();
 }
 async function pollAsf() {
-  if (!['ASF', 'Дашборд', 'Карточки'].includes(S.tab)) return;
-  let n; try { n = await api('asf'); } catch { return; }
-  const changed = JSON.stringify(n) !== JSON.stringify(S.asf); S.asf = n;
-  if (changed) render();
+  if (['ASF', 'Дашборд', 'Карточки', 'Игры'].includes(S.tab)) {
+    try {
+      const n = await api('asf');
+      const changed = JSON.stringify(n) !== JSON.stringify(S.asf);
+      S.asf = n;
+      if (changed) render();
+    } catch { /* IPC подождёт следующий круг */ }
+  }
+  if (S.tab === 'Прогрев' && S.warmMode === 'Задачи') {
+    try {
+      const board = await api('board');
+      if (JSON.stringify(board.tasks) !== JSON.stringify(S.tasks)) { S.tasks = board.tasks || []; render(); }
+    } catch { /* очередь обновится позже */ }
+  }
 }
 setInterval(pollAsf, 6000);
 setInterval(async () => {

@@ -2,6 +2,8 @@ import sqlite3
 from pathlib import Path
 from datetime import datetime
 
+import vault
+
 DB_PATH = Path(__file__).parent / "accounts.db"
 
 
@@ -55,7 +57,26 @@ def init_db():
     ):
         _add_column(cur, "accounts", col, typ)
     conn.commit()
+    _migrate_secrets(conn)
     conn.close()
+
+
+def _migrate_secrets(conn):
+    """Шифрует ещё открытые пароли, почты и прокси. Повторный запуск ничего не меняет."""
+    cur = conn.cursor()
+    for table, cols in (("accounts", vault.ACCOUNT_FIELDS), ("proxies", vault.PROXY_FIELDS)):
+        cur.execute(f"SELECT id, {', '.join(cols)} FROM {table}")
+        for row in cur.fetchall():
+            sets, values = [], []
+            for col in cols:
+                val = row[col]
+                if val and not vault.is_sealed(val):
+                    sets.append(f"{col} = ?")
+                    values.append(vault.encrypt(val))
+            if sets:
+                values.append(row["id"])
+                cur.execute(f"UPDATE {table} SET {', '.join(sets)} WHERE id = ?", values)
+    conn.commit()
 
 
 def _add_column(cur, table: str, column: str, typedef: str):
@@ -69,6 +90,7 @@ def add_account(data: dict) -> int:
     conn = get_connection()
     cur = conn.cursor()
     now = datetime.now().isoformat(timespec="seconds")
+    data = vault.seal_map(data, vault.ACCOUNT_FIELDS)
     cur.execute("""
         INSERT INTO accounts (
             steam_id, login, password, rcode, configured,
@@ -102,6 +124,7 @@ def update_account(account_id: int, data: dict):
     conn = get_connection()
     cur = conn.cursor()
     now = datetime.now().isoformat(timespec="seconds")
+    data = vault.seal_map(data, vault.ACCOUNT_FIELDS)
     cur.execute("""
         UPDATE accounts SET
             steam_id = ?, login = ?, password = ?, rcode = ?,
@@ -141,6 +164,7 @@ def update_account_fields(account_id: int, fields: dict):
     }
     sets = []
     values = []
+    fields = vault.seal_map(fields, vault.ACCOUNT_FIELDS)
     for key, value in fields.items():
         if key not in allowed:
             continue
@@ -164,7 +188,7 @@ def find_account_by_login(login: str):
     cur.execute("SELECT * FROM accounts WHERE lower(login) = lower(?)", (login.strip(),))
     row = cur.fetchone()
     conn.close()
-    return dict(row) if row else None
+    return vault.open_row(dict(row), vault.ACCOUNT_FIELDS) if row else None
 
 
 def delete_account(account_id: int):
@@ -179,7 +203,7 @@ def get_all_accounts():
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("SELECT * FROM accounts ORDER BY id DESC")
-    rows = [dict(row) for row in cur.fetchall()]
+    rows = [vault.open_row(dict(row), vault.ACCOUNT_FIELDS) for row in cur.fetchall()]
     conn.close()
     return rows
 
@@ -190,7 +214,7 @@ def get_account(account_id: int):
     cur.execute("SELECT * FROM accounts WHERE id = ?", (account_id,))
     row = cur.fetchone()
     conn.close()
-    return dict(row) if row else None
+    return vault.open_row(dict(row), vault.ACCOUNT_FIELDS) if row else None
 
 
 def get_stats():
@@ -217,6 +241,7 @@ def add_proxy(data: dict) -> int:
     conn = get_connection()
     cur = conn.cursor()
     now = datetime.now().isoformat(timespec="seconds")
+    data = vault.seal_map(data, vault.PROXY_FIELDS)
     cur.execute("""
         INSERT INTO proxies (
             protocol, host, port, username, password, notes, created_at, updated_at
@@ -240,6 +265,7 @@ def update_proxy(proxy_id: int, data: dict):
     conn = get_connection()
     cur = conn.cursor()
     now = datetime.now().isoformat(timespec="seconds")
+    data = vault.seal_map(data, vault.PROXY_FIELDS)
     cur.execute("""
         UPDATE proxies SET
             protocol = ?, host = ?, port = ?, username = ?,
@@ -269,18 +295,12 @@ def delete_proxy(proxy_id: int):
 
 
 def find_proxy(host: str, port: int, username: str = ""):
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute(
-        """
-        SELECT * FROM proxies
-        WHERE host = ? AND port = ? AND COALESCE(username, '') = ?
-        """,
-        (host, int(port), username or ""),
-    )
-    row = cur.fetchone()
-    conn.close()
-    return dict(row) if row else None
+    """Хост и логин в базе зашифрованы, поэтому сравнение идёт после расшифровки."""
+    want = username or ""
+    for row in get_all_proxies():
+        if row.get("host") == host and int(row["port"]) == int(port) and (row.get("username") or "") == want:
+            return row
+    return None
 
 
 def assign_proxies_one_to_one() -> tuple[int, int]:
@@ -308,7 +328,7 @@ def get_all_proxies():
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("SELECT * FROM proxies ORDER BY id DESC")
-    rows = [dict(row) for row in cur.fetchall()]
+    rows = [vault.open_row(dict(row), vault.PROXY_FIELDS) for row in cur.fetchall()]
     conn.close()
     return rows
 
@@ -319,7 +339,7 @@ def get_proxy(proxy_id: int):
     cur.execute("SELECT * FROM proxies WHERE id = ?", (proxy_id,))
     row = cur.fetchone()
     conn.close()
-    return dict(row) if row else None
+    return vault.open_row(dict(row), vault.PROXY_FIELDS) if row else None
 
 
 def set_main_account(account_id: int):

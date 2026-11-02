@@ -103,3 +103,10 @@ a.btn{display:inline-flex;align-items:center;text-decoration:none}
 .setup .in{width:100%}
 .setup .path{display:flex;gap:8px}
 .setup .path .in{flex:1;width:auto}
+.tag{font-size:12px;font-weight:600;padding:2px 8px;border-radius:99px;background:var(--alt);white-space:nowrap}
+.tag.run{background:rgba(10,132,255,.16);color:var(--acc-t)}
+.tag.done{background:rgba(48,209,88,.16);color:var(--ok)}
+.tag.err{background:rgba(215,0,21,.12);color:var(--bad)}
+.bgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px}
+.grow{display:flex;justify-content:space-between;gap:12px;align-items:center;padding:8px 0;border-top:1px solid var(--line2)}
+.grow.now{background:rgba(48,209,88,.1);margin:0 -8px;padding:8px;border-radius:8px;border-top:0}
