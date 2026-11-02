@@ -64,7 +64,11 @@ const closeM = () => $('#dlg').close();
 
 function table(heads, items, sel, cells, pick, edit) {
   return h('div', { class: 'card tbl' }, h('table', {}, h('thead', {}, h('tr', {}, heads.map(x => h('th', {}, x)))),
-    h('tbody', {}, items.map(it => h('tr', { class: it.id === sel ? 'sel' : '', onclick: () => pick(it.id), ondblclick: () => edit(it) }, cells(it).map(c => h('td', {}, c)))))));
+    h('tbody', {}, items.map(it => {
+      const row = { class: it.id === sel ? 'sel' : '', onclick: () => pick(it.id) };
+      if (edit) row.ondblclick = () => edit(it);
+      return h('tr', row, cells(it).map(c => h('td', {}, c)));
+    }))));
 }
 const dotCls = s => s === 'онлайн' ? 'ok' : (s.includes('пауза') || s === 'запускается') ? 'warn' : '';
 function asfBadge(short) {
@@ -185,10 +189,10 @@ const views = {
         h('span', { style: 'flex:1' }), btn('Из ASF', 'p', importAsf), btn('Импорт', '', () => exchangeDlg('accounts', 'import')), btn('Экспорт', '', () => exchangeDlg('accounts', 'export')),
         btn('Раздать прокси', '', assign), btn('Пути', '', settingsDlg)),
       h('div', { id: 'ls', class: 'm st' }),
-      cur() ? accountCard(cur()) : h('div', { class: 'card pad m' }, 'Выбери аккаунт в таблице: здесь будут логин, пароль, настройки, уровень и остальные данные.'),
+      cur() ? accountCard(cur()) : h('div', { class: 'card pad m' }, 'Нажми строку аккаунта: откроется меню, а не форма редактирования.'),
       table(['ID', 'Логин', 'Баланс', 'Лвл', 'Настроен', 'Прайм', 'Без огр.', 'Потрачено', 'Почта', 'Прокси'], rows, S.sa,
         a => [a.id, (a.is_main ? '★ ' : '') + a.login, a.balance || '—', a.level ?? '—', tick(a.configured), tick(a.prime_bought), tick(a.restriction_lifted), money(a.spent), a.email || '—', px(a.proxy_id)],
-        id => { S.sa = id; render(); }, accountForm));
+        openAccount, null));
   },
   'Прокси'() {
     const cur = () => S.proxies.find(p => p.id === S.sp), need = fn => () => cur() ? fn(cur()) : toast('Сначала выбери прокси в таблице', true);
@@ -319,7 +323,7 @@ Object.assign(views, {
       h('div', { class: 'cards c4' }, [['Доход', money(sum('income')), 'ok'], ['Реинвест', money(sum('reinvest')), ''], ['Дроп, шт.', sum('drops'), ''], ['Отправлено', sum('sent_main'), '']].map(([l, v, c]) => h('div', { class: 'card stat' }, h('div', { class: 'm' }, l), h('div', { class: 'num ' + c }, v)))),
       table(['Логин', 'Статус', 'Прогрев', 'Ранг', 'Опыт', 'Дроп', 'Доход', 'На главный', 'Реинвест'], rows, S.sa,
         a => [(a.is_main ? '★ ' : '') + a.login, h('span', {}, h('span', { class: 'dot ' + tone(stage(a)) }), stage(a)), ready(a) + '%', a.rank || '—', a.xp ?? '—', a.drops ?? 0, money(a.income), a.sent_main ?? 0, money(a.reinvest)],
-        id => { S.sa = id; render(); }, accountForm));
+        openAccount, null));
   },
   'Карточки'() {
     const bots = botsNow(), q = (S.cq || '').toLowerCase();
@@ -508,6 +512,24 @@ function hiddenSecret(label, kind, id, field, present) {
     }
   }) }, 'Показать');
   return h('div', { class: 'ev' }, h('span', { class: 'm' }, label), h('span', { class: 'r' }, val, eye));
+}
+function openAccount(id) {
+  S.sa = id;
+  const a = S.accounts.find(x => x.id === id);
+  render();
+  if (a) accountMenu(a);
+}
+function accountMenu(a) {
+  const bot = (S.asf ? S.asf.bots : []).find(b => (b.login || '').toLowerCase() === (a.login || '').toLowerCase());
+  modal('Аккаунт · ' + (a.login || ''), h('div', { class: 'm' }, bot ? 'Команды пойдут боту ' + bot.name : 'Бота ASF с этим логином нет.'), [
+    ['Изменить', '', () => accountForm(a)],
+    ['Удалить', 'd', () => {
+      if (!confirm('Удалить аккаунт «' + a.login + '»?')) return;
+      act(async () => { await api('account/delete', { id: a.id }); S.sa = null; closeM(); await load(); });
+    }],
+    ['Команды', 'p', () => bot ? actionsDlg([bot.name]) : toast('У аккаунта нет бота в ASF', true)],
+    ['Закрыть', '', closeM],
+  ]);
 }
 function accountCard(a) {
   const px = S.proxies.find(p => p.id === a.proxy_id);
