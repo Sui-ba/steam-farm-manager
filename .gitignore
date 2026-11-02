@@ -14,3 +14,5 @@ cards.json
 logs/
 venv/
 .venv/
+asf/
+maFiles/

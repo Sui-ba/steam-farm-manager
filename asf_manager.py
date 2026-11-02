@@ -14,8 +14,8 @@ from pathlib import Path
 from urllib.parse import quote, urlparse
 
 SETTINGS_PATH = Path(__file__).parent / "settings.json"
-DEFAULT_ASF = Path(r"C:\path\to\asf")
-FALLBACK_ASF = Path(r"C:\path\to\asf-fallback")
+# Папка ASF по умолчанию — рядом с программой. Свою папку укажи в .env (ASF_DIR) или в настройках.
+DEFAULT_ASF = Path(__file__).resolve().parent / "asf"
 CREATE_NO_WINDOW = 0x08000000
 CREATE_NEW_CONSOLE = 0x00000010
 
@@ -40,9 +40,8 @@ def get_asf_dir() -> str:
     saved = str(_load_settings().get("asf_dir") or envfile.get("ASF_DIR") or "").strip()
     if saved and (Path(saved) / "ArchiSteamFarm.exe").is_file():
         return saved
-    for candidate in (DEFAULT_ASF, FALLBACK_ASF):
-        if (candidate / "ArchiSteamFarm.exe").is_file():
-            return str(candidate)
+    if (DEFAULT_ASF / "ArchiSteamFarm.exe").is_file():
+        return str(DEFAULT_ASF)
     return saved
 
 
