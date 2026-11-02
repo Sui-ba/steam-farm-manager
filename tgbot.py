@@ -22,6 +22,19 @@ LOCK = threading.Lock()
 BACK = [[("« Меню", "m")]]
 
 
+def _btn(item):
+    if isinstance(item, dict):
+        return item
+    title, data = item
+    return {"text": title, "callback_data": data}
+
+
+def panel_url():
+    """Кнопка Mini App только для публичного HTTPS. HTTP и пустое значение не отправляются."""
+    url = envfile.get("MINIAPP_URL")
+    return url if url.lower().startswith("https://") else ""
+
+
 def request(token, method, **params):
     req = urllib.request.Request(f"https://api.telegram.org/bot{token}/{method}", data=json.dumps(params).encode(), headers={"Content-Type": "application/json"})
     try:
@@ -109,7 +122,7 @@ class Bot:
         for index, chunk in enumerate(chunks):
             p = {"chat_id": chat, "text": chunk}
             if rows and index == len(chunks) - 1:
-                p["reply_markup"] = {"inline_keyboard": [[{"text": t, "callback_data": d} for t, d in r] for r in rows]}
+                p["reply_markup"] = {"inline_keyboard": [[_btn(item) for item in row] for row in rows]}
             try:
                 self.call("sendMessage", **p)
             except RuntimeError:
@@ -160,15 +173,16 @@ class Bot:
         self.menu(chat, who(uid)) if ok else self.send(chat, "Приглашение недействительно или уже использовано.")
 
     def mine(self, w):
-        accs = self.ctx.accounts()
+        items = self.ctx.roster()
         if w["accounts"] == "*":
-            return accs
-        allow = {x.lower() for x in w["accounts"]}
-        return [a for a in accs if a["login"].lower() in allow]
+            return items
+        allow = {str(x).lower() for x in w["accounts"]}
+        return [a for a in items if a["login"].lower() in allow or str(a.get("bot") or "").lower() in allow]
 
     def menu(self, chat, w):
-        accs, bots, p = self.mine(w), self.ctx.bots(), w["perms"]
-        on = sum(1 for a in accs if bots.get(a["login"].lower(), {}).get("state", "").startswith("онлайн"))
+        accs, p = self.mine(w), w["perms"]
+        on = sum(1 for a in accs if str(a.get("state") or "").startswith("онлайн"))
+        asf_n = sum(1 for a in accs if a.get("bot"))
         rows = []
         if "view" in p:
             rows.append([("Статус", "v:status"), ("Инвентарь", "a:Inv")])
@@ -179,7 +193,10 @@ class Bot:
         if "transfer" in p:
             rows.append([("Передать главному", "a:Transfer")])
         role = "владелец" if w["role"] == "owner" else "сотрудник"
-        self.send(chat, f"Steam Farm Manager\n{w['name']} · {role}\nАккаунтов: {len(accs)}, онлайн: {on}", rows)
+        url = panel_url()
+        if url:
+            rows.insert(0, [{"text": "Открыть панель", "web_app": {"url": url}}])
+        self.send(chat, f"Steam Farm Manager\n{w['name']} · {role}\nБотов ASF: {asf_n}, онлайн: {on}", rows)
 
     def callback(self, chat, w, data):
         kind, _, rest = data.partition(":")
@@ -188,22 +205,22 @@ class Bot:
             return self.menu(chat, w)
         if kind == "v":
             if rest == "status" and "view" in w["perms"]:
-                bots = self.ctx.bots()
                 lines = []
                 for a in accs:
-                    b = bots.get(a["login"].lower())
-                    cards = f" · карточек: {b['cards']}" if b and b.get("cards") not in (None, "", "—") else ""
+                    title = a.get("bot") or a["login"]
+                    if a.get("bot") and a.get("login") and a["bot"].lower() != a["login"].lower():
+                        title = f"{a['bot']} · {a['login']}"
+                    cards = f" · карточек: {a['cards']}" if a.get("cards") not in (None, "", "—") else ""
                     proxy = f" · {a['proxy']}" if a.get("proxy") else ""
-                    lines.append(f"{a['login']} — {b['state'] if b else 'нет бота'}{cards}{proxy}")
-                return self.send(chat, "\n".join(lines) or "Нет аккаунтов", BACK)
+                    lines.append(f"{title} — {a.get('state') or 'нет бота'}{cards}{proxy}")
+                return self.send(chat, "\n".join(lines) or "Нет ботов ASF", BACK)
             if rest == "bal" and "balance" in w["perms"]:
                 lines = [f"{a['login']}: {a.get('balance') or '—'} · ур. {a['level'] if a.get('level') is not None else '—'}" for a in accs]
-                return self.send(chat, "\n".join(lines) or "Нет аккаунтов", BACK)
+                return self.send(chat, "\n".join(lines) or "Нет ботов ASF", BACK)
             if rest == "cycle" and "balance" in w["perms"]:
                 income = sum(float(a.get("income") or 0) for a in accs)
                 drops = sum(int(a.get("drops") or 0) for a in accs)
-                bots = self.ctx.bots()
-                on = sum(1 for a in accs if bots.get(a["login"].lower(), {}).get("state", "").startswith("онлайн"))
+                on = sum(1 for a in accs if str(a.get("state") or "").startswith("онлайн"))
                 lines = [f"Онлайн: {on} из {len(accs)}", f"Доход: ${income:.2f}", f"Дроп: {drops} шт."]
                 for a in sorted(accs, key=lambda x: float(x.get("income") or 0), reverse=True)[:15]:
                     lines.append(f"{a['login']}: {a.get('rank') or '—'} · дроп {a.get('drops') or 0} · ${float(a.get('income') or 0):.2f}")
@@ -214,22 +231,21 @@ class Bot:
         if kind not in ("a", "r") or not need or need[0] not in w["perms"]:
             return self.send(chat, "Нет прав на это действие.")
         if kind == "a":
-            rows = [[(f"Все мои ({len(accs)})", f"r:{act}:all")]] + [[(a["login"], f"r:{act}:{a['id']}")] for a in accs[:40]] + BACK
+            rows = [[(f"Все мои ({len(accs)})", f"r:{act}:all")]] + [[(a.get("bot") or a["login"], f"r:{act}:{a['key']}")] for a in accs[:40]] + BACK
             return self.send(chat, f"{need[1]}: выбери аккаунты", rows)
         self.run(chat, w, act, target, accs)
 
     def run(self, chat, w, act, target, accs):
-        sel = accs if target == "all" else [a for a in accs if str(a["id"]) == target]
+        sel = accs if target == "all" else [a for a in accs if a.get("key") == target or str(a.get("id")) == target]
         if not sel:
             return self.send(chat, "Аккаунт недоступен.", BACK)
-        bots = self.ctx.bots()
-        main = next((a for a in self.ctx.accounts() if a.get("is_main")), None)
-        mb = bots.get(main["login"].lower()) if main else None
+        main = next((a for a in self.ctx.roster() if a.get("is_main")), None)
+        mb = {"name": main["bot"]} if main and main.get("bot") else None
         if act == "Transfer":
             if not mb:
                 return self.send(chat, "Главный аккаунт не выбран или его нет в ASF.", BACK)
-            sel = [a for a in sel if a["id"] != main["id"]]
-        pairs = [(a, bots[a["login"].lower()]["name"]) for a in sel if a["login"].lower() in bots]
+            sel = [a for a in sel if a.get("id") != main.get("id")]
+        pairs = [(a, a["bot"]) for a in sel if a.get("bot")]
         if not pairs:
             return self.send(chat, "У выбранных аккаунтов нет ботов в ASF.", BACK)
         try:

@@ -7,3 +7,10 @@ activity.json
 .env
 *.maFile
 *.mafile
+
+*.db
+cards.json
+*.log
+logs/
+venv/
+.venv/

@@ -100,6 +100,15 @@ def _proxy_display(webproxy) -> str:
     return f"{host}:{parsed.port}" if parsed.port else host
 
 
+def bot_password(name: str) -> str:
+    """Пароль из конфига бота. В ответы API и в Telegram его не класть."""
+    folder = get_asf_dir()
+    if not folder or not name or any(ch in name for ch in "/\\"):
+        return ""
+    data = _read_json(Path(folder) / "config" / f"{name}.json")
+    return str(data.get("SteamPassword") or data.get("s_SteamPassword") or "")
+
+
 def list_bots() -> list[dict]:
     folder = get_asf_dir()
     if not folder:
@@ -124,18 +133,34 @@ def list_bots() -> list[dict]:
     return bots
 
 
+def _output_text(args, timeout: float) -> str:
+    """Вывод консольной команды. tasklist на русской Windows пишет не в UTF-8."""
+    try:
+        raw = subprocess.check_output(args, timeout=timeout, creationflags=CREATE_NO_WINDOW)
+    except (OSError, subprocess.SubprocessError, UnicodeError):
+        return ""
+    if isinstance(raw, str):
+        return raw
+    if raw.startswith((b"\xff\xfe", b"\xfe\xff")):
+        return raw.decode("utf-16", errors="replace")
+    if raw.startswith(b"\xef\xbb\xbf"):
+        return raw.decode("utf-8-sig", errors="replace")
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return raw.decode("cp866", errors="replace")
+
+
 def process_exists() -> bool:
     """Одна быстрая проверка: запущен ли ArchiSteamFarm.exe."""
     try:
-        out = subprocess.check_output(
+        text = _output_text(
             ["tasklist", "/FI", "IMAGENAME eq ArchiSteamFarm.exe", "/FO", "CSV", "/NH"],
-            text=True,
-            timeout=5,
-            creationflags=CREATE_NO_WINDOW,
+            5,
         )
-    except (OSError, subprocess.SubprocessError):
+    except (OSError, subprocess.SubprocessError, UnicodeError):
         return False
-    return "ArchiSteamFarm.exe" in out
+    return "ArchiSteamFarm.exe" in text
 
 
 def asf_running(folder: str | None = None) -> bool:
@@ -152,13 +177,11 @@ def asf_running(folder: str | None = None) -> bool:
 
 def _asf_processes() -> list[dict]:
     try:
-        out = subprocess.check_output(
+        out = _output_text(
             ["tasklist", "/FI", "IMAGENAME eq ArchiSteamFarm.exe", "/FO", "CSV", "/NH"],
-            text=True,
-            timeout=5,
-            creationflags=CREATE_NO_WINDOW,
+            5,
         )
-    except (OSError, subprocess.SubprocessError):
+    except (OSError, subprocess.SubprocessError, UnicodeError):
         return []
     rows = []
     for line in out.splitlines():
@@ -170,17 +193,15 @@ def _asf_processes() -> list[dict]:
     if not rows:
         return []
     try:
-        ps = subprocess.check_output(
+        ps = _output_text(
             [
                 "powershell", "-NoProfile", "-Command",
                 "Get-CimInstance Win32_Process -Filter \"Name='ArchiSteamFarm.exe'\" | "
                 "Select-Object ProcessId,ExecutablePath | ConvertTo-Json -Compress",
             ],
-            text=True,
-            timeout=8,
-            creationflags=CREATE_NO_WINDOW,
+            8,
         ).strip()
-    except (OSError, subprocess.SubprocessError):
+    except (OSError, subprocess.SubprocessError, UnicodeError):
         return rows
     if not ps:
         return rows

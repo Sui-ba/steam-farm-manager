@@ -1,5 +1,7 @@
 """Steam Farm Manager: локальный веб-интерфейс.  Запуск: python server.py"""
 
+import hashlib
+import hmac
 import json
 import mimetypes
 import os
@@ -13,7 +15,7 @@ import time
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 import envfile
 
@@ -98,6 +100,26 @@ def push_proxies():
     if owner and tg.thread and tg.thread.is_alive():
         tg.send(owner["id"], f"Прокси в конфигах ASF: обновлено {len(result['updated'])}, уже было {len(result['skipped'])}.")
     return result
+
+
+def import_asf_accounts():
+    """Создаёт аккаунты из ботов ASF. Совпадение логина без учёта регистра — пропуск."""
+    existing = {str(a.get("login") or "").strip().lower() for a in db.get_all_accounts()}
+    added = skipped = 0
+    for bot in asf.list_bots():
+        login = str(bot.get("login") or "").strip()
+        if not login or login.lower() in existing:
+            skipped += 1
+            continue
+        db.add_account({
+            "login": login,
+            "password": asf.bot_password(bot["name"]),
+            "notes": "ASF " + bot["name"],
+        })
+        existing.add(login.lower())
+        added += 1
+    log_act(f"Импорт из ASF: добавлено {added}, уже были {skipped}")
+    return {"added": added, "skipped": skipped}
 
 
 def save_account(b):
@@ -347,6 +369,60 @@ class Ctx:
         return out
 
     @staticmethod
+    def roster():
+        """Боты из конфигов ASF. Поля базы подмешиваются, если логин совпал."""
+        db_rows = {a["login"].lower(): a for a in Ctx.accounts() if a.get("login")}
+        alive = asf.ipc_alive()
+        live = asf.ipc_bots() if alive else {}
+        try:
+            running = alive or asf.process_exists()
+        except (OSError, UnicodeError, RuntimeError):
+            running = bool(alive)
+        items, seen_logins = [], set()
+        for bot in asf.list_bots():
+            login = str(bot.get("login") or "").strip()
+            key = login.lower()
+            if key:
+                seen_logins.add(key)
+            text, cards = asf.live_status(bot, live, running)
+            acc = db_rows.get(key, {}) if key else {}
+            items.append({
+                "id": acc.get("id"),
+                "key": f"bot:{bot['name']}",
+                "login": acc.get("login") or login or bot["name"],
+                "bot": bot["name"],
+                "state": text,
+                "cards": cards,
+                "balance": acc.get("balance"),
+                "level": acc.get("level"),
+                "is_main": acc.get("is_main"),
+                "drops": acc.get("drops") or 0,
+                "income": acc.get("income") or 0,
+                "rank": acc.get("rank") or "",
+                "proxy": acc.get("proxy") or bot.get("proxy") or "",
+            })
+        for acc in Ctx.accounts():
+            login = str(acc.get("login") or "").strip()
+            if not login or login.lower() in seen_logins:
+                continue
+            items.append({
+                "id": acc.get("id"),
+                "key": f"id:{acc['id']}",
+                "login": login,
+                "bot": "",
+                "state": "",
+                "cards": "",
+                "balance": acc.get("balance"),
+                "level": acc.get("level"),
+                "is_main": acc.get("is_main"),
+                "drops": acc.get("drops") or 0,
+                "income": acc.get("income") or 0,
+                "rank": acc.get("rank") or "",
+                "proxy": acc.get("proxy") or "",
+            })
+        return items
+
+    @staticmethod
     def run(act, names, main):
         if act in ("Pause", "Resume", "Start", "Stop"):
             res = []
@@ -526,6 +602,309 @@ def refresh_stats(b):
     return {"updated": updated, "bots": len(pairs), "raw": (str(raw_b) + "\n" + str(raw_l))[:600]}
 
 
+_mini_user = threading.local()
+
+
+def miniapp_url():
+    url = envfile.get("MINIAPP_URL")
+    return url if url.lower().startswith("https://") else ""
+
+
+def _host_ok(host, path):
+    """Чужой HTTPS-хост из MINIAPP_URL видит только панель, не весь локальный API."""
+    if host in HOSTS:
+        return True
+    url = miniapp_url()
+    if not url or urlparse(url).netloc != (host or ""):
+        return False
+    clean = (path or "").split("?", 1)[0]
+    return clean == "/miniapp" or clean.startswith("/miniapp/") or clean.startswith("/api/mini/")
+
+
+def _dash(value):
+    if value is None:
+        return "—"
+    text = str(value).strip()
+    return text if text else "—"
+
+
+def verify_webapp(init_data):
+    """Проверяет подпись Telegram.WebApp.initData и права человека в боте."""
+    raw = str(init_data or "").strip()
+    if not raw or len(raw) > 32768:
+        raise ValueError("Открой панель кнопкой в боте")
+    token = envfile.get("TELEGRAM_BOT_TOKEN") or str(tgbot.load().get("token") or "")
+    if not token:
+        raise ValueError("Бот не подключён")
+    pairs = []
+    for part in raw.split("&"):
+        if "=" not in part:
+            continue
+        key, value = part.split("=", 1)
+        pairs.append((unquote(key), unquote(value)))
+    data = dict(pairs)
+    their = data.pop("hash", "")
+    if not their:
+        raise ValueError("Нет подписи Telegram")
+    check = "\n".join(f"{key}={value}" for key, value in sorted(data.items()))
+    secret = hmac.new(b"WebAppData", token.encode(), hashlib.sha256).digest()
+    calc = hmac.new(secret, check.encode(), hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(calc, their):
+        raise ValueError("Подпись Telegram не сошлась")
+    try:
+        auth_date = int(data.get("auth_date") or 0)
+    except ValueError:
+        raise ValueError("Подпись Telegram не сошлась") from None
+    if auth_date <= 0 or time.time() - auth_date > 86400 or auth_date > time.time() + 30:
+        raise ValueError("Сессия Telegram устарела. Открой панель снова.")
+    try:
+        user = json.loads(data.get("user") or "{}")
+    except json.JSONDecodeError:
+        raise ValueError("Подпись Telegram не сошлась") from None
+    uid = user.get("id")
+    if not isinstance(uid, int):
+        raise ValueError("Нет доступа")
+    person = tgbot.who(uid)
+    if not person:
+        raise ValueError("Нет доступа. Попроси у владельца ссылку.")
+    person["tg_name"] = str(user.get("first_name") or person.get("name") or "")
+    person["username"] = str(user.get("username") or "")
+    return person
+
+
+def _mini_person():
+    person = getattr(_mini_user, "who", None)
+    if not person:
+        raise ValueError("Нет доступа")
+    return person
+
+
+def _mini_items(person):
+    items = Ctx.roster()
+    if person.get("accounts") == "*":
+        return items
+    allow = {str(x).lower() for x in person.get("accounts") or []}
+    return [a for a in items if a["login"].lower() in allow or str(a.get("bot") or "").lower() in allow]
+
+
+def _can(person, perm):
+    return person.get("role") == "owner" or perm in person.get("perms", ())
+
+
+def _kind(state, cards):
+    text = str(state or "")
+    if "ошиб" in text.lower():
+        return "error"
+    if text == "онлайн" and str(cards).strip() in ("0",):
+        return "online"
+    if text == "онлайн":
+        return "farm"
+    if text.startswith("онлайн"):
+        return "online"
+    return "off"
+
+
+def _cards_num(value):
+    text = str(value or "").strip()
+    return int(text) if text.isdigit() else None
+
+
+def _asf_version():
+    try:
+        if not asf.ipc_alive():
+            return "—"
+        payload = asf._ipc("GET", "/Api/ASF", timeout=1.2)
+    except (OSError, RuntimeError, ValueError, TypeError):
+        return "—"
+    result = payload.get("Result") if isinstance(payload, dict) else None
+    if not isinstance(result, dict):
+        return "—"
+    return _dash(result.get("Version") or result.get("version"))
+
+
+def _bot_settings(name):
+    empty = {"enabled": "—", "farming": "—", "trades": "—", "file": "—"}
+    if not name or any(ch in name for ch in "/\\"):
+        return empty
+    folder = asf.get_asf_dir()
+    if not folder:
+        return empty
+    path = Path(folder) / "config" / f"{name}.json"
+    if not path.is_file():
+        return empty
+    data = asf._read_json(path)
+    if not data:
+        return empty
+    enabled = data.get("Enabled", True)
+    farming = data.get("FarmingOrders") or data.get("FarmingPreferences")
+    if isinstance(farming, (list, tuple)):
+        farming = ", ".join(str(x) for x in farming if str(x).strip())
+    elif isinstance(farming, dict):
+        farming = ""
+    return {
+        "enabled": "да" if enabled else "нет",
+        "farming": _dash(farming),
+        "trades": "—",
+        "file": path.name,
+    }
+
+
+def _mafile_label(login):
+    if not login or not sg.get_mafiles_dir():
+        return "—"
+    try:
+        return "есть" if sg.find_shared_secret(login) else "нет"
+    except (OSError, ValueError):
+        return "—"
+
+
+def mini_state(b, q):
+    person = _mini_person()
+    if not _can(person, "view") and not _can(person, "manage") and not _can(person, "balance"):
+        raise ValueError("Нет прав на просмотр")
+    items = _mini_items(person)
+    online = sum(1 for a in items if str(a.get("state") or "").startswith("онлайн"))
+    cards = [_cards_num(a.get("cards")) for a in items]
+    cards = [n for n in cards if n is not None]
+    levels = [a.get("level") for a in items if isinstance(a.get("level"), int)]
+    drops = sum(int(a.get("drops") or 0) for a in items)
+    income = sum(float(a.get("income") or 0) for a in items)
+    fresh = "—"
+    proxies = None
+    if person.get("role") == "owner":
+        have = {str(a.get("login") or "").strip().lower() for a in db.get_all_accounts()}
+        fresh = sum(1 for bot in asf.list_bots() if str(bot.get("login") or "").strip().lower() not in have and str(bot.get("login") or "").strip())
+        used = len({a.get("proxy_id") for a in db.get_all_accounts() if a.get("proxy_id")})
+        proxies = {"total": len(db.get_all_proxies()), "used": used}
+    try:
+        running = asf.ipc_alive() or asf.process_exists()
+    except (OSError, UnicodeError, RuntimeError):
+        running = False
+    bots = []
+    for a in items:
+        bots.append({
+            "key": a.get("key") or "",
+            "bot": a.get("bot") or "",
+            "login": a.get("login") or "",
+            "level": a.get("level") if isinstance(a.get("level"), int) else None,
+            "state": a.get("state") or "—",
+            "cards": _dash(a.get("cards")) if str(a.get("cards") or "").strip() not in ("", "—") else "—",
+            "kind": _kind(a.get("state"), a.get("cards")),
+            "proxy": a.get("proxy") or "",
+            "drops": int(a.get("drops") or 0),
+            "income": float(a.get("income") or 0),
+        })
+    return {
+        "me": {
+            "name": person.get("tg_name") or person.get("name") or "—",
+            "role": "владелец" if person.get("role") == "owner" else "сотрудник",
+            "username": person.get("username") or "",
+            "owner": person.get("role") == "owner",
+            "manage": _can(person, "manage"),
+            "card": _can(person, "view") or _can(person, "manage"),
+        },
+        "asf": {"running": bool(running), "version": _asf_version(), "updated": time.strftime("%H:%M:%S")},
+        "online": online,
+        "total": len(items),
+        "farm_progress": "—",
+        "cards_left": sum(cards) if cards else "—",
+        "cards_bots": len(cards) if cards else "—",
+        "level_avg": str(round(sum(levels) / len(levels), 1)).replace(".", ",") if levels else "—",
+        "level_delta": "—",
+        "drops": drops,
+        "drops_delta": "—",
+        "income": f"{income:.2f}" if items else "—",
+        "inventory": "—",
+        "import_new": fresh,
+        "proxies": proxies,
+        "bots": bots,
+        "bot_username": tg.username or "—",
+    }
+
+
+def mini_account(b, q):
+    person = _mini_person()
+    if not _can(person, "view") and not _can(person, "manage"):
+        raise ValueError("Нет прав на просмотр")
+    key = str((q.get("key") or [""])[0]).strip()
+    name = str((q.get("bot") or [""])[0]).strip()
+    items = _mini_items(person)
+    found = None
+    if key:
+        found = next((a for a in items if a.get("key") == key), None)
+    elif name:
+        found = next((a for a in items if a.get("bot") == name), None)
+    if not found:
+        raise ValueError("Нет доступа к этому боту")
+    name = str(found.get("bot") or "")
+    login = found.get("login") or ""
+    acc = db.find_account_by_login(login) if login else None
+    settings = _bot_settings(name)
+    index = next((i for i, a in enumerate(items, 1) if a.get("key") == found.get("key")), 0)
+    ipc = asf.ipc_base()
+    host = urlparse(ipc).hostname or ""
+    detail = {
+        "key": found.get("key") or "",
+        "bot": name,
+        "login": login or "—",
+        "index": index,
+        "total": len(items),
+        "state": found.get("state") or "—",
+        "kind": _kind(found.get("state"), found.get("cards")),
+        "level": found.get("level") if isinstance(found.get("level"), int) else None,
+        "steam_id": _dash((acc or {}).get("steam_id")),
+        "proxy": found.get("proxy") or "—",
+        "mafile": _mafile_label(login),
+        "enabled": settings["enabled"],
+        "farming": settings["farming"],
+        "trades": settings["trades"],
+        "cards": _dash(found.get("cards")) if str(found.get("cards") or "").strip() not in ("", "—") else "—",
+        "file": settings["file"],
+        "manage": _can(person, "manage"),
+        "ipc_local": host in ("127.0.0.1", "localhost", "::1", ""),
+    }
+    if person.get("role") == "owner":
+        detail["password"] = str((acc or {}).get("password") or "")
+    else:
+        detail["password_locked"] = True
+    return detail
+
+
+def mini_action(b, q):
+    person = _mini_person()
+    act = str(b.get("action") or "")
+    items = _mini_items(person)
+    if act == "import":
+        if person.get("role") != "owner":
+            raise ValueError("Импорт доступен только владельцу")
+        result = import_asf_accounts()
+        return {"message": f"Добавлено: {result['added']}. Уже были: {result['skipped']}."}
+    if act in ("start_all", "pause_all"):
+        if not _can(person, "manage"):
+            raise ValueError("Нет прав на управление")
+        names = [a["bot"] for a in items if a.get("bot")]
+        note = ""
+        if act == "start_all" and person.get("role") == "owner":
+            try:
+                note = asf.start_asf()
+            except RuntimeError as exc:
+                note = str(exc)
+        if not names:
+            return {"message": note or "Нет ботов ASF"}
+        text = Ctx.run("Start" if act == "start_all" else "Pause", names, None)
+        return {"message": (note + "\n" + text).strip()}
+    if act in ("start", "pause"):
+        if not _can(person, "manage"):
+            raise ValueError("Нет прав на управление")
+        name = str(b.get("bot") or "").strip()
+        if not name or any(ch in name for ch in "/\\"):
+            raise ValueError("Нет такого бота")
+        if not any(a.get("bot") == name for a in items):
+            raise ValueError("Нет доступа к этому боту")
+        return {"message": asf.bot_action(name, "Start" if act == "start" else "Pause")}
+    raise ValueError("Неизвестное действие")
+
+
 ROUTES = {
     ("GET", "/api/state"): lambda b, q: state(),
     ("GET", "/api/asf"): lambda b, q: asf_state(),
@@ -543,6 +922,7 @@ ROUTES = {
     ("POST", "/api/settings"): lambda b, q: set_settings(b),
     ("POST", "/api/setup"): lambda b, q: save_setup(b),
     ("POST", "/api/browse"): lambda b, q: browse_folder(b),
+    ("POST", "/api/asf/import"): lambda b, q: import_asf_accounts(),
     ("POST", "/api/asf/start"): lambda b, q: {"message": asf.start_asf()},
     ("POST", "/api/asf/stop"): lambda b, q: {"message": asf.stop_asf()},
     ("POST", "/api/asf/bot"): lambda b, q: {"message": asf.bot_action(b.get("name", ""), b.get("action", ""))},
@@ -561,6 +941,9 @@ ROUTES = {
     ("POST", "/api/fields"): lambda b, q: db.update_account_fields(int(b["id"]), b.get("fields") or {}) or {"ok": True},
     ("POST", "/api/refresh"): lambda b, q: refresh_stats(b),
     ("POST", "/api/asf/command"): lambda b, q: {"result": asf.send_command(b.get("command", ""))},
+    ("GET", "/api/mini/state"): lambda b, q: mini_state(b, q),
+    ("GET", "/api/mini/account"): lambda b, q: mini_account(b, q),
+    ("POST", "/api/mini/action"): lambda b, q: mini_action(b, q),
 }
 
 
@@ -581,9 +964,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def _handle(self, method):
         # Защита от чужих сайтов: только наш Host и свой заголовок для записи.
-        if self.headers.get("Host") not in HOSTS:
-            return self._send(403, {"error": "forbidden"})
         url = urlparse(self.path)
+        if not _host_ok(self.headers.get("Host"), url.path):
+            return self._send(403, {"error": "forbidden"})
         if not url.path.startswith("/api/"):
             return self._static(url.path) if method == "GET" else self._send(405, {"error": "method"})
         if method != "GET" and self.headers.get("X-Requested-With") != "sfm":
@@ -592,6 +975,8 @@ class Handler(BaseHTTPRequestHandler):
         if not route:
             return self._send(404, {"error": "not found"})
         try:
+            if url.path.startswith("/api/mini"):
+                _mini_user.who = verify_webapp(self.headers.get("X-Telegram-Init-Data"))
             size = int(self.headers.get("Content-Length") or 0)
             body = json.loads(self.rfile.read(size) or b"{}") if size else {}
             result = route(body, parse_qs(url.query))
@@ -599,17 +984,26 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(400, {"error": str(exc) or exc.__class__.__name__})
         except Exception as exc:
             return self._send(500, {"error": f"{exc.__class__.__name__}: {exc}"})
+        finally:
+            _mini_user.who = None
         if isinstance(result, tuple):
             data, ctype, name = result
             return self._send(200, data, ctype, {"Content-Disposition": f"attachment; filename={name}"})
         self._send(200, result)
 
     def _static(self, path):
+        clean = path.rstrip("/") or "/"
+        if clean == "/miniapp":
+            path = "/miniapp/index.html"
         target = (WEB / ("index.html" if path == "/" else path.lstrip("/"))).resolve()
         if WEB.resolve() not in target.parents or not target.is_file():
             return self._send(404, {"error": "not found"})
-        ctype = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
-        self._send(200, target.read_bytes(), ctype + ("; charset=utf-8" if ctype.startswith("text") or "javascript" in ctype else ""))
+        extra = {".js": "text/javascript", ".css": "text/css", ".html": "text/html", ".svg": "image/svg+xml"}
+        ctype = mimetypes.guess_type(target.name)[0] or extra.get(target.suffix.lower(), "application/octet-stream")
+        if ctype.startswith("text") or "javascript" in ctype or ctype.endswith("+xml"):
+            ctype += "; charset=utf-8"
+        headers = {"Cache-Control": "no-store"} if path.startswith("/miniapp") else None
+        self._send(200, target.read_bytes(), ctype, headers)
 
     def do_GET(self):
         self._handle("GET")

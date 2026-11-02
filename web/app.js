@@ -160,9 +160,10 @@ const views = {
         btn('Войти в браузере', '', need(a => act(async () => { await api('login', { id: a.id }); }))),
         btn('Главный ★', '', need(a => act(async () => { await api('main', { id: a.id }); await load(); }))),
         btn('Обновить баланс и лвл', '', () => act(async () => { const r = await api('refresh', {}); toast(`Обновлено: ${r.updated} из ${r.bots}`); await load(); })),
-        h('span', { style: 'flex:1' }), btn('Импорт', '', () => exchangeDlg('accounts', 'import')), btn('Экспорт', '', () => exchangeDlg('accounts', 'export')),
+        h('span', { style: 'flex:1' }), btn('Из ASF', 'p', importAsf), btn('Импорт', '', () => exchangeDlg('accounts', 'import')), btn('Экспорт', '', () => exchangeDlg('accounts', 'export')),
         btn('Раздать прокси', '', assign), btn('Пути', '', settingsDlg)),
       h('div', { id: 'ls', class: 'm st' }),
+      cur() ? accountCard(cur()) : h('div', { class: 'card pad m' }, 'Выбери аккаунт в таблице: здесь будут логин, пароль, настройки, уровень и остальные данные.'),
       table(['ID', 'Логин', 'Баланс', 'Лвл', 'Настроен', 'Прайм', 'Без огр.', 'Потрачено', 'Почта', 'Прокси'], rows, S.sa,
         a => [a.id, (a.is_main ? '★ ' : '') + a.login, a.balance || '—', a.level ?? '—', tick(a.configured), tick(a.prime_bought), tick(a.restriction_lifted), money(a.spent), a.email || '—', px(a.proxy_id)],
         id => { S.sa = id; render(); }, accountForm));
@@ -186,7 +187,7 @@ const views = {
     const go = p => act(async () => { toast((await api(p, {})).message); setTimeout(pollAsf, 1500); });
     return h('div', { class: 'col' },
       h('div', { class: 'r sb' }, h('div', {}, h('h1', {}, 'Боты ASF'), h('div', { class: 'm' }, `${bots.length} ботов`)),
-        h('div', { class: 'r' }, asfBadge(true), btn('Запустить', 'p', () => go('asf/start')), btn('Стоп', 'd', () => confirm('Остановить ArchiSteamFarm?') && go('asf/stop')), a ? h('a', { class: 'btn', href: a.base, target: '_blank', rel: 'noopener' }, 'IPC') : null, btn('Папка', '', settingsDlg))),
+        h('div', { class: 'r' }, asfBadge(true), btn('Запустить', 'p', () => go('asf/start')), btn('Стоп', 'd', () => confirm('Остановить ArchiSteamFarm?') && go('asf/stop')), btn('В аккаунты', 'p', importAsf), a ? h('a', { class: 'btn', href: a.base, target: '_blank', rel: 'noopener' }, 'IPC') : null, btn('Папка', '', settingsDlg))),
       h('div', { class: 'card pad r sb', style: 'flex-direction:row;align-items:center;padding:14px 20px' }, h('div', { class: 'r' }, h('b', {}, '★ Главный'), mainSel()), h('span', { class: 'm' }, 'Сюда передаются предметы')),
       h('div', { class: 'card pad', style: 'padding:14px 20px;gap:0;display:block' }, h('div', { class: 'r sb' }, h('span', {}, `${conn} / ${bots.length} подключено`), h('span', { class: 'm' }, `${bots.length - conn} офлайн`)), h('div', { class: 'trk' }, h('i', { style: `width:${bots.length ? conn * 100 / bots.length : 0}%` }))),
       h('div', { class: 'r' }, aqIn, h('select', { class: 'sel', 'aria-label': 'Фильтр', onchange: e => { S.af = e.target.value; render(); } }, ['Все', 'Онлайн', 'Пауза', 'Офлайн'].map(x => h('option', { value: x, selected: x === f }, x))),
@@ -312,6 +313,27 @@ Object.assign(views, {
 const assign = () => confirm('Назначить по одному прокси на аккаунт по порядку добавления?\nТекущие назначения будут перезаписаны.') && act(async () => {
   const r = await api('assign', {}); toast(`Назначено: ${r.assigned}\nБез прокси: ${r.left}`); await load();
 });
+const importAsf = () => act(async () => {
+  const r = await api('asf/import', {});
+  toast(`Из ASF добавлено: ${r.added}. Уже были: ${r.skipped}.`);
+  await load();
+});
+function accountCard(a) {
+  const px = S.proxies.find(p => p.id === a.proxy_id);
+  const bot = (S.asf ? S.asf.bots : []).find(b => (b.login || '').toLowerCase() === (a.login || '').toLowerCase());
+  const yes = v => v ? 'да' : 'нет';
+  const line = (l, v) => h('div', { class: 'ev' }, h('span', { class: 'm' }, l), h('b', {}, v == null || v === '' ? '—' : String(v)));
+  return h('div', { class: 'card pad' },
+    h('div', { class: 'r sb' }, h('h2', { style: 'margin:0' }, (a.is_main ? '★ ' : '') + (a.login || 'Аккаунт')), btn('Изменить', '', () => accountForm(a))),
+    h('div', { class: 'grid2' },
+      line('Логин', a.login), line('Пароль', a.password), line('Настроен', yes(a.configured)), line('Уровень', a.level),
+      line('Баланс', a.balance), line('Steam ID', a.steam_id), line('Прайм', yes(a.prime_bought)), line('Без ограничения', yes(a.restriction_lifted)),
+      line('Почта', a.email), line('Пароль почты', a.email_password), line('Rcode', a.rcode), line('Код дружбы', a.friend_code),
+      line('Первый Ko', a.first_ko), line('Потрачено', money(a.spent)), line('Прокси', px ? px.host + ':' + px.port : ''),
+      line('Ранг', a.rank), line('Опыт', a.xp), line('Дроп', a.drops), line('Доход', money(a.income)),
+      line('На главный', a.sent_main), line('Реинвест', money(a.reinvest)),
+      line('Бот ASF', bot ? bot.name : ''), line('Статус ASF', bot ? bot.state : ''), line('Заметки', a.notes)));
+}
 
 function accountForm(a = {}) {
   const f = {};
