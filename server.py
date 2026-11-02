@@ -38,10 +38,36 @@ def _status(text, kind=None):
     login_status.update(text=text, kind=kind or "info")
 
 
+def setup_needed():
+    """Первый запуск: в .env ещё нет своих путей и Telegram."""
+    if envfile.get("SFM_SETUP_DONE") == "1":
+        return False
+    filled = any(envfile.get(key) for key in ("TELEGRAM_BOT_TOKEN", "TELEGRAM_OWNER_ID", "ASF_DIR", "MAFILES_DIR"))
+    if filled:
+        envfile.set("SFM_SETUP_DONE", "1")
+        return False
+    return True
+
+
+def setup_info():
+    info = {"needed": setup_needed()}
+    if not info["needed"]:
+        return info
+    return {
+        **info,
+        "port": str(PORT),
+        "asf_dir": asf.get_asf_dir(),
+        "mafiles_dir": sg.get_mafiles_dir(),
+        "owner_id": envfile.get("TELEGRAM_OWNER_ID"),
+        "owner_name": envfile.get("TELEGRAM_OWNER_NAME"),
+    }
+
+
 def state():
     return {
         "accounts": db.get_all_accounts(), "proxies": db.get_all_proxies(), "stats": db.get_stats(),
         "settings": {"mafiles_dir": sg.get_mafiles_dir(), "asf_dir": asf.get_asf_dir()},
+        "setup": setup_info(),
     }
 
 
@@ -177,6 +203,99 @@ def set_settings(b):
                 raise ValueError(f"Папки нет: {value}")
             setter(value)
     return {"ok": True}
+
+
+_browse_lock = threading.Lock()
+
+
+def browse_folder(b):
+    """Системное окно выбора папки. Путь не нужно копировать из проводника."""
+    if os.name != "nt":
+        raise ValueError("Кнопка «Обзор» работает в Windows. Вставь путь вручную.")
+    if not _browse_lock.acquire(blocking=False):
+        raise ValueError("Окно выбора папки уже открыто")
+    out = script = None
+    try:
+        out = Path(tempfile.gettempdir()) / f"sfm-browse-{secrets.token_hex(4)}.txt"
+        script = Path(tempfile.gettempdir()) / f"sfm-browse-{secrets.token_hex(4)}.ps1"
+        script.write_text(
+            "Add-Type -AssemblyName System.Windows.Forms\n"
+            "$form = New-Object System.Windows.Forms.Form\n"
+            "$form.TopMost = $true\n"
+            "$form.ShowInTaskbar = $false\n"
+            "$form.Opacity = 0\n"
+            "$form.Show()\n"
+            "$d = New-Object System.Windows.Forms.FolderBrowserDialog\n"
+            "$d.Description = $env:SFM_BROWSE_TITLE\n"
+            "$d.ShowNewFolderButton = $false\n"
+            "if ($d.ShowDialog($form) -eq [System.Windows.Forms.DialogResult]::OK) {\n"
+            "  [IO.File]::WriteAllText($env:SFM_BROWSE_OUT, $d.SelectedPath, (New-Object System.Text.UTF8Encoding $false))\n"
+            "}\n"
+            "$form.Close()\n",
+            encoding="utf-8-sig",
+        )
+        env = os.environ.copy()
+        env["SFM_BROWSE_TITLE"] = str(b.get("title") or "Выбери папку")[:80]
+        env["SFM_BROWSE_OUT"] = str(out)
+        try:
+            subprocess.run(
+                ["powershell", "-NoProfile", "-STA", "-ExecutionPolicy", "Bypass", "-File", str(script)],
+                env=env, timeout=180, check=False, creationflags=0x08000000,
+            )
+        except subprocess.TimeoutExpired:
+            raise ValueError("Окно выбора папки закрыто по таймауту")
+        path = out.read_text(encoding="utf-8-sig").strip() if out.is_file() else ""
+        return {"path": path}
+    finally:
+        _browse_lock.release()
+        for path in (out, script):
+            if path is not None:
+                path.unlink(missing_ok=True)
+
+
+def save_setup(b):
+    """Первый запуск: пути, Telegram и порт пишутся в .env из окна программы."""
+    if b.get("skip"):
+        envfile.set("SFM_SETUP_DONE", "1")
+        return {"ok": True, "needed": False, "message": "Можно заполнить позже: кнопка «Пути» и вкладка Telegram."}
+
+    asf_dir = str(b.get("asf_dir") or "").strip().strip('"')
+    ma_dir = str(b.get("mafiles_dir") or "").strip().strip('"')
+    token = str(b.get("token") or "").strip()
+    owner_id = str(b.get("owner_id") or "").strip()
+    owner_name = str(b.get("owner_name") or "").strip()[:40]
+    port = str(b.get("port") or "").strip() or "8765"
+
+    if asf_dir and not (Path(asf_dir) / "ArchiSteamFarm.exe").is_file():
+        raise ValueError("В этой папке нет ArchiSteamFarm.exe")
+    if ma_dir and not Path(ma_dir).is_dir():
+        raise ValueError("Папка maFiles не найдена")
+    if owner_id and not owner_id.isdigit():
+        raise ValueError("Telegram id владельца должен быть числом. Его пишет @userinfobot.")
+    if not port.isdigit() or not 1 <= int(port) <= 65535:
+        raise ValueError("Порт — число от 1 до 65535")
+    username = tgbot.request(token, "getMe")["username"] if token else ""
+
+    if asf_dir:
+        asf.set_asf_dir(asf_dir)
+    if ma_dir:
+        sg.set_mafiles_dir(ma_dir)
+    envfile.set("SFM_PORT", port)
+    if owner_id:
+        envfile.set("TELEGRAM_OWNER_ID", owner_id)
+        envfile.set("TELEGRAM_OWNER_NAME", owner_name or "Владелец")
+        cfg = tgbot.load()
+        cfg["owner"] = {"id": int(owner_id), "name": owner_name or "Владелец"}
+        tgbot.save(cfg)
+    if token:
+        tg_token({"token": token})
+    envfile.set("SFM_SETUP_DONE", "1")
+    parts = ["Настройки сохранены."]
+    if username:
+        parts.append(f"Бот @{username} подключён.")
+    if port != str(PORT):
+        parts.append("Новый порт включится после перезапуска start.bat.")
+    return {"ok": True, "needed": False, "message": " ".join(parts)}
 
 
 def import_(b):
@@ -422,6 +541,8 @@ ROUTES = {
     ("POST", "/api/import"): lambda b, q: import_(b),
     ("POST", "/api/login"): lambda b, q: start_login(b),
     ("POST", "/api/settings"): lambda b, q: set_settings(b),
+    ("POST", "/api/setup"): lambda b, q: save_setup(b),
+    ("POST", "/api/browse"): lambda b, q: browse_folder(b),
     ("POST", "/api/asf/start"): lambda b, q: {"message": asf.start_asf()},
     ("POST", "/api/asf/stop"): lambda b, q: {"message": asf.stop_asf()},
     ("POST", "/api/asf/bot"): lambda b, q: {"message": asf.bot_action(b.get("name", ""), b.get("action", ""))},

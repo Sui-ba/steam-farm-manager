@@ -292,7 +292,7 @@ Object.assign(views, {
   'Telegram'() {
     const t = S.tg; if (!t) return h('div', { class: 'card pad m' }, 'Загрузка…');
     const tok = h('input', { class: 'in', style: 'flex:1', type: 'password', autocomplete: 'off', placeholder: 'Токен бота от @BotFather', 'aria-label': 'Токен бота' });
-    const bot = !t.token_set ? h('div', { class: 'col' }, h('div', { class: 'm' }, 'Создай бота у @BotFather и вставь токен. Токен хранится только на этом компьютере (telegram.json).'), h('div', { class: 'r' }, tok, btn('Подключить', 'p', () => act(async () => { S.tg = await api('tg/token', { token: tok.value }); toast('Бот подключён'); render(); }))))
+    const bot = !t.token_set ? h('div', { class: 'col' }, h('div', { class: 'm' }, 'Создай бота у @BotFather и вставь токен. Токен хранится только на этом компьютере.'), h('div', { class: 'r' }, tok, btn('Подключить', 'p', () => act(async () => { S.tg = await api('tg/token', { token: tok.value }); toast('Бот подключён'); render(); }))))
       : h('div', { class: 'r sb' }, h('div', { class: 'r' }, h('span', { class: 'dot ' + (t.running && !t.error ? 'ok' : 'warn') }), h('b', {}, '@' + (t.username || '…')), h('span', { class: 'm' }, t.error ? 'Ошибка: ' + t.error : t.running ? 'Работает' : 'Остановлен')),
         h('div', { class: 'r' }, btn('Тест', '', () => act(async () => { await api('tg/test', {}); toast('Отправлено владельцу'); })), btn('Отключить', 'd', () => confirm('Отключить бота? Привязки сохранятся.') && act(async () => { S.tg = await api('tg/token', { token: '' }); render(); }))));
     const owner = h('div', { class: 'r sb' }, h('div', { class: 'r' }, h('b', {}, 'Владелец'), h('span', { class: 'm' }, t.owner ? `${t.owner.name} · ${t.owner.id}` : 'не привязан')),
@@ -365,11 +365,61 @@ function settingsDlg() {
 
 const NAV = [['Основное', [['Дашборд', 'home', 'Дашборд'], ['Аккаунты', 'users', 'Аккаунты'], ['Цикл', 'chart', 'Цикл'], ['ASF', 'bot', 'Боты ASF'], ['Прокси', 'globe', 'Прокси']]],
   ['Автоматизация', [['Прогрев', 'flame', 'Прогрев'], ['Бейджи', 'award', 'Бейджи'], ['Карточки', 'cards', 'Карточки']]], ['Команда', [['Telegram', 'send', 'Telegram']]]];
+function setupScreen() {
+  const s = S.setup || {};
+  const asfDir = h('input', { class: 'in', value: s.asf_dir || '', spellcheck: 'false', 'aria-label': 'Папка ASF' });
+  const maDir = h('input', { class: 'in', value: s.mafiles_dir || '', spellcheck: 'false', 'aria-label': 'Папка maFiles' });
+  const token = h('input', { class: 'in', type: 'password', autocomplete: 'off', placeholder: 'Токен от @BotFather', 'aria-label': 'Токен бота' });
+  const ownerId = h('input', { class: 'in', inputmode: 'numeric', value: s.owner_id || '', placeholder: 'Число от @userinfobot', 'aria-label': 'Telegram id' });
+  const ownerName = h('input', { class: 'in', value: s.owner_name || '', placeholder: 'Как показывать в боте', 'aria-label': 'Имя владельца' });
+  const port = h('input', { class: 'in', inputmode: 'numeric', value: s.port || '8765', 'aria-label': 'Порт' });
+  const pick = (input, title) => btn('Обзор', '', () => act(async () => {
+    const r = await api('browse', { title });
+    if (r.path) input.value = r.path;
+  }));
+  const root = h('div', { id: 'setup', class: 'setup' }, h('div', { class: 'card pad sheet' },
+    h('h1', {}, 'Первый запуск'),
+    h('div', { class: 'm' }, 'Заполни настройки здесь. В файлы заходить не нужно. Пустые поля можно оставить и указать позже.'),
+    fld('Папка ArchiSteamFarm', h('div', { class: 'path' }, asfDir, pick(asfDir, 'Папка с ArchiSteamFarm.exe'))),
+    fld('Папка maFiles', h('div', { class: 'path' }, maDir, pick(maDir, 'Папка maFiles'))),
+    fld('Токен Telegram-бота', token),
+    h('div', { class: 'grid2' }, fld('Telegram id владельца', ownerId), fld('Имя владельца', ownerName)),
+    fld('Порт', port),
+    h('div', { class: 'm' }, 'Токен выдаёт @BotFather, id — @userinfobot. Если сменить порт, закрой программу и снова запусти start.bat.'),
+    h('div', { class: 'r end' },
+      btn('Пропустить', '', () => act(async () => {
+        if (!confirm('Открыть программу без этих настроек? Папки и Telegram можно указать потом.')) return;
+        await api('setup', { skip: true });
+        S.setup.needed = false;
+        root.remove();
+        toast('Можно заполнить позже: «Пути» и вкладка Telegram');
+      })),
+      btn('Сохранить и открыть', 'p', () => act(async () => {
+        const r = await api('setup', {
+          asf_dir: asfDir.value, mafiles_dir: maDir.value, token: token.value,
+          owner_id: ownerId.value, owner_name: ownerName.value, port: port.value,
+        });
+        S.setup.needed = false;
+        root.remove();
+        toast(r.message || 'Готово');
+        await load();
+      })))));
+  return root;
+}
 function render() {
   applyTheme();
   $('#tabs').replaceChildren(...NAV.map(([g, items]) => h('div', {}, h('div', { class: 'nt' }, g), items.map(([t, i, l]) => h('button', { class: 'ni' + (t === S.tab ? ' on' : ''), 'aria-current': t === S.tab ? 'page' : null, onclick: () => { S.tab = t; render(); pollAsf(); if (t === 'Telegram') act(loadTg); } }, ico(i), l)))));
   $('#themes').replaceChildren(...MODES.map(([l, m]) => h('button', { class: mode() === m ? 'on' : '', onclick: () => { localStorage.setItem('theme', m); render(); } }, l)));
   $('#view').replaceChildren(views[S.tab]());
+  const box = $('#setup');
+  if (S.setup && S.setup.needed) {
+    if (!box) {
+      const el = setupScreen();
+      document.body.append(el);
+      const first = el.querySelector('input');
+      if (first) first.focus();
+    }
+  } else if (box) box.remove();
 }
 async function pollAsf() {
   if (!['ASF', 'Дашборд', 'Карточки'].includes(S.tab)) return;
