@@ -8,6 +8,10 @@ import struct
 import time
 from pathlib import Path
 
+import envfile
+
+envfile.load()
+
 SETTINGS_PATH = Path(__file__).parent / "settings.json"
 DEFAULT_MAFILES = Path(r"C:\path\to\maFiles")
 ALPHABET = "23456789BCDFGHJKMNPQRTVWXY"
@@ -33,7 +37,7 @@ def _load_settings() -> dict:
 
 
 def get_mafiles_dir() -> str:
-    saved = str(_load_settings().get("mafiles_dir") or "").strip()
+    saved = str(_load_settings().get("mafiles_dir") or envfile.get("MAFILES_DIR") or "").strip()
     if saved and Path(saved).is_dir():
         return saved
     if DEFAULT_MAFILES.is_dir():
@@ -48,6 +52,7 @@ def set_mafiles_dir(path: str):
         json.dumps(settings, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
+    envfile.set("MAFILES_DIR", path)
 
 
 def generate_code(shared_secret: str, timestamp: int | None = None) -> str:

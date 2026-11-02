@@ -4,5 +4,6 @@ accounts.db
 telegram.json
 settings.json
 activity.json
+.env
 *.maFile
 *.mafile

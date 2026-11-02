@@ -15,6 +15,10 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
+import envfile
+
+envfile.load()
+
 import asf_manager as asf
 import browser_login
 import database as db
@@ -23,7 +27,7 @@ import steam_guard as sg
 import tgbot
 
 WEB = Path(__file__).parent / "web"
-PORT = int(os.environ.get("SFM_PORT", "8765"))
+PORT = int(envfile.get("SFM_PORT", "8765") or "8765")
 HOSTS = {f"127.0.0.1:{PORT}", f"localhost:{PORT}"}
 login_status = {"text": "", "kind": ""}
 CARDS = Path(__file__).parent / "cards.json"
@@ -259,11 +263,13 @@ def tg_token(b):
     if not token:
         c["token"] = ""
         tgbot.save(c)
+        envfile.set("TELEGRAM_BOT_TOKEN", "")
         tg.shutdown()
         return tg_state()
     tg.username = tgbot.request(token, "getMe")["username"]
     c["token"] = token
     tgbot.save(c)
+    envfile.set("TELEGRAM_BOT_TOKEN", token)
     tg.start()
     return tg_state()
 

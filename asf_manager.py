@@ -3,6 +3,10 @@
 import json
 import os
 import socket
+
+import envfile
+
+envfile.load()
 import subprocess
 import urllib.error
 import urllib.request
@@ -33,7 +37,7 @@ def _save_settings(updates: dict):
 
 
 def get_asf_dir() -> str:
-    saved = str(_load_settings().get("asf_dir") or "").strip()
+    saved = str(_load_settings().get("asf_dir") or envfile.get("ASF_DIR") or "").strip()
     if saved and (Path(saved) / "ArchiSteamFarm.exe").is_file():
         return saved
     for candidate in (DEFAULT_ASF, FALLBACK_ASF):
@@ -44,6 +48,7 @@ def get_asf_dir() -> str:
 
 def set_asf_dir(path: str):
     _save_settings({"asf_dir": path})
+    envfile.set("ASF_DIR", path)
 
 
 def asf_exe(folder: str | None = None) -> Path | None:

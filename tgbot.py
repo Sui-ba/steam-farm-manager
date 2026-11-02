@@ -3,11 +3,16 @@
 Пароли, почты и maFiles в Telegram не отправляются."""
 
 import json
+import os
 import threading
 import time
 import urllib.error
 import urllib.request
 from pathlib import Path
+
+import envfile
+
+envfile.load()
 
 CFG = Path(__file__).parent / "telegram.json"
 PERMS = {"view": "Статус и инвентарь", "balance": "Баланс и уровень", "manage": "Пауза, старт, стоп", "transfer": "Передача предметов"}
@@ -41,6 +46,15 @@ def load():
         c = {}
     for key, default in (("token", ""), ("owner", None), ("employees", []), ("invites", {})):
         c.setdefault(key, default)
+    token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
+    if token:
+        c["token"] = token
+    owner_id = os.environ.get("TELEGRAM_OWNER_ID", "").strip()
+    if owner_id.isdigit():
+        name = os.environ.get("TELEGRAM_OWNER_NAME", "").strip()
+        if not name and isinstance(c.get("owner"), dict):
+            name = str(c["owner"].get("name") or "")
+        c["owner"] = {"id": int(owner_id), "name": name or "Владелец"}
     return c
 
 
