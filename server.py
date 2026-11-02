@@ -26,6 +26,7 @@ import browser_login
 import channel_games
 import database as db
 import exchange as ex
+import steam_badges
 import steam_guard as sg
 import tgbot
 import vault
@@ -38,8 +39,11 @@ CARDS = Path(__file__).parent / "cards.json"
 ACTIVITY = Path(__file__).parent / "activity.json"
 BOARD = Path(__file__).parent / "board.json"
 GAMES = Path(__file__).parent / "games.json"
+BADGES = Path(__file__).parent / "badge_live.json"
 _board_lock = threading.Lock()
 _games_lock = threading.Lock()
+_badge_lock = threading.Lock()
+_badge_running = False
 
 
 def _status(text, kind=None):
@@ -899,6 +903,7 @@ def mini_account(b, q):
         "file": settings["file"],
         "manage": _can(person, "manage"),
         "ipc_local": host in ("127.0.0.1", "localhost", "::1", ""),
+        "badges": steam_badges.summary_for(BADGES, login),
     }
     if person.get("role") == "owner":
         detail["password"] = str((acc or {}).get("password") or "")
@@ -1166,6 +1171,58 @@ def _watch_tasks():
             pass
 
 
+def _watch_badges():
+    """Редкая проверка публичных значков. Первый проход не сразу после старта."""
+    time.sleep(60)
+    while True:
+        try:
+            badges_check()
+        except Exception:
+            pass
+        time.sleep(1800)
+
+
+def badges_public():
+    with _badge_lock:
+        running = _badge_running
+    return steam_badges.public_view(steam_badges.read_cache(BADGES), running)
+
+
+def _badge_notify(lines):
+    owner = tgbot.load().get("owner")
+    if not owner or not (tg.thread and tg.thread.is_alive()):
+        return
+    tg.send(owner["id"], "Значки Steam:\n" + "\n".join(lines))
+
+
+def _badge_job():
+    global _badge_running
+    try:
+        rows = []
+        for acc in db.get_all_accounts():
+            login = str(acc.get("login") or "").strip()
+            if login:
+                rows.append({"login": login, "steam_id": str(acc.get("steam_id") or "")})
+        steam_badges.refresh(BADGES, rows, notify=_badge_notify, pause=1.5)
+        log_act("Проверка значков Steam")
+    except Exception:
+        pass
+    finally:
+        with _badge_lock:
+            _badge_running = False
+
+
+def badges_check():
+    """Фоновая проверка. Один запрос не ждёт все профили."""
+    global _badge_running
+    with _badge_lock:
+        if _badge_running:
+            return {"started": False, "running": True}
+        _badge_running = True
+    threading.Thread(target=_badge_job, name="sfm-badges", daemon=True).start()
+    return {"started": True, "running": True}
+
+
 def board_badge(b, q):
     op = str(b.get("op") or "add")
     with _board_lock:
@@ -1353,6 +1410,8 @@ ROUTES = {
     ("GET", "/api/games"): lambda b, q: games_state(),
     ("POST", "/api/games/fetch"): lambda b, q: games_fetch(b),
     ("POST", "/api/games/add"): lambda b, q: games_add(b),
+    ("GET", "/api/badges/live"): lambda b, q: badges_public(),
+    ("POST", "/api/badges/check"): lambda b, q: badges_check(),
     ("POST", "/api/asf/run"): lambda b, q: asf_run(b),
     ("POST", "/api/main"): lambda b, q: db.set_main_account(int(b["id"])) or {"ok": True},
     ("POST", "/api/fields"): lambda b, q: db.update_account_fields(int(b["id"]), b.get("fields") or {}) or {"ok": True},
@@ -1484,6 +1543,7 @@ def main():
     db.init_db()
     vault.announce_api_token()
     threading.Thread(target=_watch_tasks, daemon=True).start()
+    threading.Thread(target=_watch_badges, daemon=True).start()
     if tgbot.load()["token"]:
         tg.start()
     url = f"http://127.0.0.1:{PORT}/"

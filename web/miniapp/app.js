@@ -310,6 +310,7 @@
       line("key", "v", "Пароль", passCell(acc)) +
       line("star", "a", "Уровень Steam", '<span class="lvl" style="font-size:12px">' + esc(level) + "</span>") +
       line("id", "b", "SteamID", "<span class=\"mono\" style=\"font-size:12.5px\">" + esc(dash(acc.steam_id)) + "</span>") +
+      line("award", "a", "Значки", "<span>" + esc(dash(acc.badges)) + "</span>") +
       line("globe", "v", "Прокси", "<span class=\"mono\" style=\"font-size:12.5px\">" + esc(dash(acc.proxy)) + "</span>") +
       line("shield", "g", "maFile", maTag(acc.mafile)) +
       "</div>" +

@@ -11,7 +11,7 @@ const h = (tag, attrs = {}, ...kids) => {
   if (val !== undefined) e.value = val;
   return e;
 };
-const S = { accounts: [], proxies: [], stats: {}, settings: {}, tab: 'Дашборд', q: '', sa: null, sp: null, sb: null, asf: null, sel: new Set(), cards: [], wt: 'Чек-лист', cs: new Set(), tasks: [], badges: [], warmMode: 'Задачи', tf: 'Все', cq: '', games: { channel: '', items: [], skipped: 0, posts: 0, before: null, fetched: '' }, gresult: '' };
+const S = { accounts: [], proxies: [], stats: {}, settings: {}, tab: 'Дашборд', q: '', sa: null, sp: null, sb: null, asf: null, sel: new Set(), cards: [], wt: 'Чек-лист', cs: new Set(), tasks: [], badges: [], warmMode: 'Задачи', tf: 'Все', cq: '', games: { channel: '', items: [], skipped: 0, posts: 0, before: null, fetched: '' }, gresult: '', badgeLive: { accounts: [], checked: '', running: false } };
 S.tsel = new Set();
 S.gsel = new Set();
 S.gbot = new Set();
@@ -42,6 +42,8 @@ const load = async () => {
   S.badges = board.badges || [];
   S.games = await api('games');
   if (!gchIn.value && S.games.channel) gchIn.value = '@' + S.games.channel;
+  S.badgeLive = await api('badges/live');
+  if (S.badgeLive.running) pollBadges();
   S.activity = (await api('activity')).items;
   render();
 };
@@ -386,7 +388,7 @@ Object.assign(views, {
       const cards = h('input', { class: 'in', type: 'number', min: 0, max: 99, value: b.cards || 0, 'aria-label': 'Карты' });
       const note = h('input', { class: 'in', value: b.note || '', maxlength: 120, 'aria-label': 'Заметка' });
       modal(b.id ? 'Бейдж' : 'Новый бейдж', h('div', { class: 'grid2' }, fld('Аккаунт', login), fld('Тип', kind), fld('Название', name), fld('AppID', appid), fld('Уровень', level), fld('Цель', target), fld('Карт к сету', cards), fld('Заметка', note),
-        h('div', { class: 'm', style: 'grid-column:1/-1' }, 'Уровень и число карт вводишь сам: программа не заходит в значки Steam и сама их не крафтит. 1 уровень = 100 XP.')),
+        h('div', { class: 'm', style: 'grid-column:1/-1' }, 'Уровень и число карт в этом плане вводишь сам. Программа значки не крафтит. 1 уровень = 100 XP.')),
         [['Отмена', '', closeM], ['Сохранить', 'p', () => act(async () => {
           const r = await api('board/badge', { op: 'add', id: b.id, login: login.value, kind: kind.value, name: name.value, appid: appid.value, level: +level.value, target: +target.value, cards: +cards.value, note: note.value });
           S.badges = r.badges; closeM(); render();
@@ -411,8 +413,35 @@ Object.assign(views, {
       if (!added) throw new Error('У рабочих аккаунтов нет ботов ASF');
       toast('Отметки в прогреве: ' + added);
     });
+    const live = S.badgeLive || { accounts: [], checked: '', running: false };
+    const steamRows = live.accounts || [];
+    const word = { close: 'близко', done: 'готово', far: 'копит' };
+    const checkSteam = () => act(async () => {
+      const r = await api('badges/check', {});
+      toast(r.started ? 'Проверка публичных профилей запущена' : 'Проверка уже идёт');
+      S.badgeLive = { ...live, running: true };
+      pollBadges();
+      render();
+    });
+    const badgeBits = (row) => {
+      const items = (row.badges || []).slice(0, 3);
+      if (!items.length) return '—';
+      return items.map(b => h('div', {}, (b.title || 'Значок') + ' · ' + (word[b.state] || '') + (b.detail ? ' ' + b.detail : '')));
+    };
+    const steamCard = h('div', { class: 'card pad col' },
+      h('div', { class: 'r sb' }, h('div', {}, h('b', {}, 'Страницы Steam'), h('div', { class: 'm' }, live.running ? 'Идёт проверка публичных профилей.' : (live.checked ? 'Проверено ' + live.checked : 'Проверки ещё не было.'))), btn('Проверить Steam', 'p', checkSteam)),
+      h('div', { class: 'm' }, 'Читается публичная страница значков. Профиль должен быть открыт, в аккаунте нужен SteamID. Крафт программа не нажимает.'),
+      steamRows.length ? h('div', { class: 'tbl' }, h('table', {},
+        h('thead', {}, h('tr', {}, ['Аккаунт', 'Уровень', 'Близко', 'На 100%', 'Сейчас'].map(x => h('th', {}, x)))),
+        h('tbody', {}, steamRows.map(row => h('tr', {},
+          h('td', {}, row.login || '—', h('div', { class: 'm' }, row.status === 'ok' ? (row.note || row.summary || '') : (row.summary || row.note || ''))),
+          h('td', {}, row.level == null ? '—' : row.level),
+          h('td', {}, row.close || 0),
+          h('td', {}, row.done || 0),
+          h('td', {}, badgeBits(row))))))) : h('div', { class: 'm' }, 'Пока пусто. Нажми «Проверить Steam».'));
     return h('div', { class: 'col' },
       h('div', { class: 'r sb' }, h('div', {}, h('h1', {}, 'Бейджи'), h('div', { class: 'm' }, 'План значков по аккаунтам. Крафт остаётся в Steam.')), btn('+ Бейдж', 'p', () => badgeDlg())),
+      steamCard,
       h('div', { class: 'cards c3' }, [['В плане', rows.length], ['Можно крафтить', ready.length], ['XP по плану', xp]].map(([l, v]) => h('div', { class: 'card stat' }, h('div', { class: 'm' }, l), h('div', { class: 'num' }, v)))),
       rows.length ? h('div', { class: 'card tbl' }, h('table', {}, h('thead', {}, h('tr', {}, ['Аккаунт', 'Бейдж', 'Тип', 'Уровень', 'Карты', 'Статус', ''].map(x => h('th', {}, x)))),
         h('tbody', {}, rows.map(b => {
@@ -545,7 +574,7 @@ function accountCard(a) {
       line('Первый Ko', a.first_ko), line('Потрачено', money(a.spent)), line('Прокси', px ? px.host + ':' + px.port : ''),
       line('Ранг', a.rank), line('Опыт', a.xp), line('Дроп', a.drops), line('Доход', money(a.income)),
       line('На главный', a.sent_main), line('Реинвест', money(a.reinvest)),
-      line('Бот ASF', bot ? bot.name : ''), line('Статус ASF', bot ? bot.state : ''), line('Заметки', a.notes)));
+      line('Бот ASF', bot ? bot.name : ''), line('Статус ASF', bot ? bot.state : ''), line('Значки Steam', badgeLine(a)), line('Заметки', a.notes)));
 }
 
 function accountForm(a = {}) {
@@ -729,6 +758,27 @@ function render() {
       if (first) first.focus();
     }
   } else if (box) box.remove();
+}
+function badgeLine(a) {
+  const rows = (S.badgeLive && S.badgeLive.accounts) || [];
+  const row = rows.find(x => (x.login || '').toLowerCase() === (a.login || '').toLowerCase());
+  return row ? (row.summary || 'нет данных') : 'ещё не проверяли';
+}
+function pollBadges() {
+  if (S.badgeTimer) return;
+  const started = Date.now();
+  S.badgeTimer = setInterval(() => {
+    api('badges/live').then(next => {
+      const same = JSON.stringify(next) === JSON.stringify(S.badgeLive);
+      S.badgeLive = next;
+      const dlg = $('#dlg');
+      if (!same && (S.tab === 'Бейджи' || S.tab === 'Аккаунты') && !(dlg && dlg.open)) render();
+      if (!next.running || Date.now() - started > 8 * 60 * 1000) {
+        clearInterval(S.badgeTimer);
+        S.badgeTimer = 0;
+      }
+    }).catch(() => { clearInterval(S.badgeTimer); S.badgeTimer = 0; });
+  }, 4000);
 }
 async function pollAsf() {
   if (['ASF', 'Дашборд', 'Карточки', 'Игры'].includes(S.tab)) {
