@@ -11,7 +11,7 @@ import subprocess
 import urllib.error
 import urllib.request
 from pathlib import Path
-from urllib.parse import quote, urlparse
+from urllib.parse import quote, unquote, urlparse
 
 import runtime
 
@@ -358,16 +358,49 @@ def send_command(command: str) -> str:
 
 
 def proxy_url(proxy: dict) -> str:
+    """Адрес прокси для ASF: scheme://host:port без логина и пароля (ASF 6.3 не понимает их в URL)."""
     protocol = (proxy.get("protocol") or "http").strip().lower() or "http"
-    user = quote(str(proxy.get("username") or ""), safe="")
-    password = quote(str(proxy.get("password") or ""), safe="")
-    auth = f"{user}:{password}@" if user else ""
-    return f"{protocol}://{auth}{proxy['host']}:{int(proxy['port'])}"
+    return f"{protocol}://{proxy['host']}:{int(proxy['port'])}"
 
 
-def write_bot_proxies(pairs: list[tuple[str, str]]) -> dict:
-    """Пишет WebProxy в config бота, если SteamLogin совпал. Пароль прокси в ответ не попадает."""
-    wanted = {login.strip().lower(): url for login, url in pairs if login and url}
+def proxy_fields(proxy: dict) -> dict:
+    """Поля конфига бота ASF для прокси. Как в addproxy.py: адрес, логин и пароль отдельно."""
+    return {
+        "WebProxy": proxy_url(proxy),
+        "WebProxyUsername": str(proxy.get("username") or "") or None,
+        "WebProxyPassword": str(proxy.get("password") or "") or None,
+        "SteamProtocols": 4,
+    }
+
+
+def _fields_from_url(url: str) -> dict:
+    """Старый формат scheme://user:pass@host:port раскладывается на поля ASF."""
+    raw = url if "://" in url else "http://" + url
+    parsed = urlparse(raw)
+    return {
+        "WebProxy": f"{parsed.scheme}://{parsed.hostname}:{parsed.port}" if parsed.port else f"{parsed.scheme}://{parsed.hostname}",
+        "WebProxyUsername": unquote(parsed.username) if parsed.username else None,
+        "WebProxyPassword": unquote(parsed.password) if parsed.password else None,
+        "SteamProtocols": 4,
+    }
+
+
+PROXY_KEYS = ("WebProxy", "WebProxyUsername", "WebProxyPassword", "SteamProtocols")
+
+
+def write_bot_proxies(pairs: list[tuple[str, dict]]) -> dict:
+    """Пишет прокси в config бота, если SteamLogin совпал.
+
+    pairs: (логин, proxy_fields(...)). Строка-URL тоже принимается и раскладывается на поля.
+    Пароль прокси в ответ и в лог не попадает.
+    """
+    wanted = {}
+    for login, fields in pairs:
+        if not login or not fields:
+            continue
+        if isinstance(fields, str):
+            fields = _fields_from_url(fields)
+        wanted[login.strip().lower()] = {k: fields.get(k) for k in PROXY_KEYS}
     folder = get_asf_dir()
     if not folder:
         raise RuntimeError("Папка ASF не выбрана")
@@ -384,12 +417,16 @@ def write_bot_proxies(pairs: list[tuple[str, str]]) -> dict:
         if not login or login not in wanted:
             continue
         seen.add(login)
-        url = wanted[login]
-        if data.get("WebProxy") == url:
+        fields = wanted[login]
+        if all(data.get(k) == fields[k] for k in PROXY_KEYS):
             skipped.append(path.stem)
             continue
-        data["WebProxy"] = url
-        path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        for key in PROXY_KEYS:
+            if fields[key] is None:
+                data.pop(key, None)
+            else:
+                data[key] = fields[key]
+        path.write_text(json.dumps(data, ensure_ascii=False, indent=4) + "\n", encoding="utf-8")
         updated.append(path.stem)
     for login in wanted:
         if login not in seen:

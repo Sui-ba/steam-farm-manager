@@ -27,6 +27,7 @@ import browser_login
 import channel_games
 import database as db
 import exchange as ex
+import proxy_check
 import steam_badges
 import steam_guard as sg
 import tgbot
@@ -133,7 +134,7 @@ def push_proxies():
     for account in db.get_all_accounts():
         proxy = proxies.get(account.get("proxy_id"))
         if proxy:
-            pairs.append((account["login"], asf.proxy_url(proxy)))
+            pairs.append((account["login"], asf.proxy_fields(proxy)))
     if not pairs:
         raise ValueError("Нет аккаунтов с назначенным прокси")
     result = asf.write_bot_proxies(pairs)
@@ -142,6 +143,44 @@ def push_proxies():
     if owner and tg.thread and tg.thread.is_alive():
         tg.send(owner["id"], f"Прокси в конфигах ASF: обновлено {len(result['updated'])}, уже было {len(result['skipped'])}.")
     return result
+
+
+def _proxies_to_check(b):
+    proxies = db.get_all_proxies()
+    ids = b.get("ids")
+    if ids:
+        want = {int(x) for x in ids}
+        return [p for p in proxies if p["id"] in want]
+    if b.get("all") or b.get("assigned_only") is False:
+        return proxies
+    used = {a.get("proxy_id") for a in db.get_all_accounts() if a.get("proxy_id")}
+    return [p for p in proxies if p["id"] in used]
+
+
+def check_proxies(b):
+    """Проверка прокси: внешний IP и Steam API. По умолчанию только назначенные аккаунтам."""
+    items = _proxies_to_check(b or {})
+    if not items:
+        raise ValueError("Нет прокси для проверки")
+    results = proxy_check.check_many(items)
+    info = proxy_check.summary(results)
+    log_act(f"Проверка прокси: рабочих {info['ok']} из {info['total']}, Steam доступен у {info['steam_ok']}")
+    return {"results": results, "summary": info, "checked": proxy_check.last_results()["checked"]}
+
+
+def proxy_check_text():
+    """Короткий отчёт для Telegram по назначенным прокси."""
+    try:
+        r = check_proxies({})
+    except ValueError as exc:
+        return str(exc)
+    info = r["summary"]
+    lines = [f"Прокси: рабочих {info['ok']} из {info['total']}, Steam: {info['steam_ok']}"
+             + (f", ~{info['median_ms']} мс" if info["median_ms"] else "")]
+    for x in r["results"]:
+        if not (x["ok"] and x["steam_ok"]):
+            lines.append(f"✗ #{x['id']} {x['host']}:{x['port']} — {x['error'] or 'нет ответа'}")
+    return "\n".join(lines[:40])
 
 
 def import_asf_accounts():
@@ -481,6 +520,7 @@ class Ctx:
         raise ValueError("Неизвестное действие")
 
     log = staticmethod(lambda text: log_act(text))
+    check_proxies = staticmethod(lambda: proxy_check_text())
 
 
 tg = tgbot.Bot(Ctx)
@@ -1385,6 +1425,8 @@ ROUTES = {
     ("POST", "/api/proxy/delete"): lambda b, q: db.delete_proxy(int(b["id"])) or {"ok": True},
     ("POST", "/api/assign"): lambda b, q: dict(zip(("assigned", "left"), db.assign_proxies_one_to_one())),
     ("POST", "/api/proxies/push"): lambda b, q: push_proxies(),
+    ("POST", "/api/proxy/check"): lambda b, q: check_proxies(b),
+    ("GET", "/api/proxy/check"): lambda b, q: proxy_check.last_results(),
     ("POST", "/api/import"): lambda b, q: import_(b),
     ("POST", "/api/login"): lambda b, q: start_login(b),
     ("POST", "/api/settings"): lambda b, q: set_settings(b),
@@ -1542,19 +1584,20 @@ def _panel_token_required(path: str) -> bool:
 
 def main():
     db.init_db()
+    url = f"http://127.0.0.1:{PORT}/"
+    try:
+        server = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
+    except OSError:
+        # Сервер уже запущен: только открываем окно, второй бот и фоновые задачи не стартуем.
+        print(f"Уже запущено: {url}")
+        if "--no-browser" not in sys.argv:
+            open_app_window(url)
+        return
     vault.announce_api_token()
     threading.Thread(target=_watch_tasks, daemon=True).start()
     threading.Thread(target=_watch_badges, daemon=True).start()
     if tgbot.load()["token"]:
         tg.start()
-    url = f"http://127.0.0.1:{PORT}/"
-    try:
-        server = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
-    except OSError:
-        print(f"Уже запущено: {url}")
-        if "--no-browser" not in sys.argv:
-            open_app_window(url)
-        return
     print(f"Steam Farm Manager: {url}")
     if "--no-browser" in sys.argv:
         try:

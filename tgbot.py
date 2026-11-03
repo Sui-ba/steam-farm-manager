@@ -193,6 +193,8 @@ class Bot:
             rows += [[("Пауза", "a:Pause"), ("Продолжить", "a:Resume")], [("Старт", "a:Start"), ("Стоп", "a:Stop")]]
         if "transfer" in p:
             rows.append([("Передать главному", "a:Transfer")])
+        if w["role"] == "owner":
+            rows.append([("Проверить прокси", "v:proxy")])
         role = "владелец" if w["role"] == "owner" else "сотрудник"
         url = panel_url()
         if url:
@@ -226,6 +228,9 @@ class Bot:
                 for a in sorted(accs, key=lambda x: float(x.get("income") or 0), reverse=True)[:15]:
                     lines.append(f"{a['login']}: {a.get('rank') or '—'} · дроп {a.get('drops') or 0} · ${float(a.get('income') or 0):.2f}")
                 return self.send(chat, "\n".join(lines), BACK)
+            if rest == "proxy" and w["role"] == "owner":
+                self.send(chat, "Проверяю прокси аккаунтов, это до 20 секунд…")
+                return self.send(chat, self.ctx.check_proxies(), BACK)
             return self.send(chat, "Нет прав на это действие.")
         act, _, target = rest.partition(":")
         need = ACTIONS.get(act)

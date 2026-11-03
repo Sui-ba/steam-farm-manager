@@ -15,6 +15,7 @@ const S = { accounts: [], proxies: [], stats: {}, settings: {}, tab: 'Дашбо
 S.tsel = new Set();
 S.gsel = new Set();
 S.gbot = new Set();
+S.pcheck = {};
 S.hosts = new Set(JSON.parse(localStorage.getItem('hosts') || '[]')); S.per = +localStorage.getItem('per') || 15; S.activity = [];
 const MODES = [['Авто', 'auto'], ['Светлая', 'light'], ['Тёмная', 'dark']];
 const mode = () => localStorage.getItem('theme') || 'auto';
@@ -45,6 +46,7 @@ const load = async () => {
   S.badgeLive = await api('badges/live');
   if (S.badgeLive.running) pollBadges();
   S.activity = (await api('activity')).items;
+  try { const pc = await api('proxy/check'); S.pchecked = pc.checked; for (const x of pc.results) S.pcheck[x.id] = x; } catch (e) { }
   render();
 };
 const money = n => '$' + Number(n || 0).toFixed(2);
@@ -205,8 +207,11 @@ const views = {
           const r = await api('proxies/push', {});
           toast(`В ASF: обновлено ${r.updated.length}, без изменений ${r.skipped.length}` + (r.missing.length ? `\nНет бота: ${r.missing.slice(0, 5).join(', ')}` : ''));
         }))),
-      table(['ID', 'Протокол', 'Хост', 'Порт', 'Логин', 'Акк.', 'Заметки'], S.proxies, S.sp,
-        p => [p.id, p.protocol || 'http', p.host, p.port, p.username || '—', S.accounts.filter(a => a.proxy_id === p.id).length, p.notes || '—'], id => { S.sp = id; render(); }, proxyForm));
+      h('div', { class: 'r' }, btn(S.pchecking ? 'Проверяю…' : 'Проверить прокси', 'p', () => checkProxies({})), btn('Проверить выбранный', '', need(p => checkProxies({ ids: [p.id] }))),
+        btn('Проверить все', '', () => confirm(`Проверить все ${S.proxies.length} прокси? Это может занять несколько минут и потратить немного трафика.`) && checkProxies({ all: true })),
+        h('span', { class: 'm' }, S.pcheckSum || (S.pchecked ? 'Последняя проверка: ' + S.pchecked : 'Проверка: внешний IP и доступ к Steam API'))),
+      table(['ID', 'Протокол', 'Хост', 'Порт', 'Логин', 'Акк.', 'Проверка', 'Заметки'], S.proxies, S.sp,
+        p => [p.id, p.protocol || 'http', p.host, p.port, p.username || '—', S.accounts.filter(a => a.proxy_id === p.id).length, proxyBadge(S.pcheck[p.id]), p.notes || '—'], id => { S.sp = id; render(); }, proxyForm));
   },
   'ASF'() {
     const a = S.asf, bots = a ? a.bots : [], q = (S.aq || '').toLowerCase(), f = S.af || 'Все', on = s => s.startsWith('онлайн');
@@ -601,6 +606,25 @@ function accountForm(a = {}) {
     const r = await api('reveal', { kind: 'account', id: a.id });
     draw({ ...a, password: r.password, email_password: r.email_password });
   });
+}
+function proxyBadge(r) {
+  if (!r) return h('span', { class: 'm' }, '—');
+  if (!r.ok) return h('span', { class: 'r', title: r.error || '' }, h('span', { class: 'tag err' }, 'нет связи'));
+  return h('span', { class: 'r', title: r.error || '' }, h('span', { class: 'tag ' + (r.steam_ok ? 'done' : 'warn') }, r.steam_ok ? 'OK' : 'без Steam'),
+    h('span', { class: 'tag' }, r.ip), r.ms != null ? h('span', { class: 'm' }, r.ms + ' мс') : null);
+}
+async function checkProxies(body) {
+  if (S.pchecking) return;
+  S.pchecking = true; render();
+  await act(async () => {
+    const r = await api('proxy/check', body);
+    for (const x of r.results) S.pcheck[x.id] = x;
+    const s = r.summary;
+    S.pchecked = r.checked;
+    S.pcheckSum = `Рабочих ${s.ok} из ${s.total}, Steam доступен у ${s.steam_ok}` + (s.median_ms ? `, ~${s.median_ms} мс` : '') + ` · ${r.checked}`;
+    toast(S.pcheckSum, s.ok < s.total);
+  });
+  S.pchecking = false; render();
 }
 function proxyForm(p = {}) {
   const draw = (full) => {

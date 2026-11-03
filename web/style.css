@@ -107,6 +107,7 @@ a.btn{display:inline-flex;align-items:center;text-decoration:none}
 .tag.run{background:rgba(10,132,255,.16);color:var(--acc-t)}
 .tag.done{background:rgba(48,209,88,.16);color:var(--ok)}
 .tag.err{background:rgba(215,0,21,.12);color:var(--bad)}
+.tag.warn{background:rgba(255,159,10,.16);color:var(--warn)}
 .bgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px}
 .grow{display:flex;justify-content:space-between;gap:12px;align-items:center;padding:8px 0;border-top:1px solid var(--line2)}
 .grow.now{background:rgba(48,209,88,.1);margin:0 -8px;padding:8px;border-radius:8px;border-top:0}
